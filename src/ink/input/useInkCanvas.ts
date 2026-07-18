@@ -96,8 +96,9 @@ export default function useInkCanvas(options: InkCanvasOptions) {
     if (!vectorLayer || !canvas || !previewCanvas || !cursor) return undefined;
     let previewDirtyRect: DirtyRect | null = null;
 
-    const redrawLiveStroke = () => {
+    const redrawCanvas = () => {
       const context = clearCanvas(canvas, viewRef.current);
+      history.all.forEach((stroke) => drawPoints(context, stroke.points, stroke.color));
       const stroke = activeStrokeRef.current;
       if (stroke) drawPoints(context, stroke.points, stroke.color);
     };
@@ -147,7 +148,7 @@ export default function useInkCanvas(options: InkCanvasOptions) {
       const previewChanged = resizeCanvas(previewCanvas);
       if (!baseChanged && !previewChanged) return;
       if (previewChanged) previewDirtyRect = null;
-      redrawLiveStroke();
+      redrawCanvas();
       drawPreview(activeStrokeRef.current);
       setVectorView(vectorLayer, viewRef.current);
       updateGrid();
@@ -199,7 +200,6 @@ export default function useInkCanvas(options: InkCanvasOptions) {
       clearPreview();
       history.add(stroke);
       appendVectorStroke(vectorLayer, stroke, viewRef.current);
-      clearCanvas(canvas, viewRef.current);
       return true;
     };
 
@@ -250,7 +250,7 @@ export default function useInkCanvas(options: InkCanvasOptions) {
       showZoomControls();
       previewDirtyRect = null;
       clearCanvas(previewCanvas, viewRef.current);
-      redrawLiveStroke();
+      redrawCanvas();
       drawPreview(activeStrokeRef.current);
       setVectorView(vectorLayer, viewRef.current);
       updateGrid();
@@ -334,7 +334,8 @@ export default function useInkCanvas(options: InkCanvasOptions) {
     const previewCanvas = previewCanvasRef.current;
     if (!vectorLayer || !canvas || !previewCanvas) return;
     redrawVectorStrokes(vectorLayer, history.all, viewRef.current);
-    clearCanvas(canvas, viewRef.current);
+    const context = clearCanvas(canvas, viewRef.current);
+    history.all.forEach((stroke) => drawPoints(context, stroke.points, stroke.color));
     clearCanvas(previewCanvas, viewRef.current);
   };
 

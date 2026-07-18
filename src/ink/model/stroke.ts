@@ -97,22 +97,7 @@ export function appendSample(stroke: Stroke, sample: PointerSample): InkPoint[] 
 }
 
 export function finishStroke(stroke: Stroke): InkPoint[] {
-  const addedPoints: InkPoint[] = [];
-
-  for (let index = stroke.points.length; index < stroke.rawPoints.length; index += 1) {
-    const point = index === 0
-      ? stabilizeStrokeStart(stroke.rawPoints, stroke.stability)
-      : index < stroke.rawPoints.length - 1
-      ? stabilizePoint(
-        stroke.rawPoints[index - 1],
-        stroke.rawPoints[index],
-        stroke.rawPoints[index + 1],
-        stroke.stability,
-      )
-      : stroke.rawPoints[index];
-    stroke.points.push(point);
-    addedPoints.push(point);
-  }
-
+  const addedPoints = stroke.rawPoints.slice(stroke.points.length);
+  stroke.points.push(...addedPoints);
   return addedPoints;
 }

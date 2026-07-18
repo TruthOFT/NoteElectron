@@ -104,6 +104,7 @@
   overflow: visible;
   pointer-events: none;
   shape-rendering: geometricPrecision;
+  visibility: hidden;
 }
 
 .ink-canvas {

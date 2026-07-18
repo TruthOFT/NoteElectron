@@ -10,42 +10,65 @@ function setViewTransform(root: SVGGElement, view: ViewTransform) {
   );
 }
 
-function createDot(point: InkPoint, color: string) {
-  const dot = document.createElementNS(SVG_NAMESPACE, 'circle');
-  dot.setAttribute('cx', String(point.x));
-  dot.setAttribute('cy', String(point.y));
-  dot.setAttribute('r', String(point.width / 2));
-  dot.setAttribute('fill', color);
-  return dot;
+const formatNumber = (value: number) => String(Math.round(value * 1000) / 1000);
+
+function appendCirclePath(parts: string[], point: InkPoint) {
+  const y = formatNumber(point.y);
+  const radius = formatNumber(point.width / 2);
+  const right = formatNumber(point.x + point.width / 2);
+  const left = formatNumber(point.x - point.width / 2);
+  parts.push(
+    `M ${right} ${y}`,
+    `A ${radius} ${radius} 0 1 0 ${left} ${y}`,
+    `A ${radius} ${radius} 0 1 0 ${right} ${y}`,
+    'Z',
+  );
 }
 
-function createSegment(start: InkPoint, end: InkPoint, color: string) {
-  if (Math.hypot(end.x - start.x, end.y - start.y) < 0.01) {
-    return createDot(end, color);
+function appendCapsulePath(parts: string[], start: InkPoint, end: InkPoint) {
+  const deltaX = end.x - start.x;
+  const deltaY = end.y - start.y;
+  const length = Math.hypot(deltaX, deltaY);
+  if (length < 0.01) {
+    appendCirclePath(parts, end);
+    return;
   }
 
-  const segment = document.createElementNS(SVG_NAMESPACE, 'line');
-  segment.setAttribute('x1', String(start.x));
-  segment.setAttribute('y1', String(start.y));
-  segment.setAttribute('x2', String(end.x));
-  segment.setAttribute('y2', String(end.y));
-  segment.setAttribute('stroke', color);
-  segment.setAttribute('stroke-width', String((start.width + end.width) / 2));
-  segment.setAttribute('stroke-linecap', 'round');
-  segment.setAttribute('stroke-linejoin', 'round');
-  return segment;
+  const radius = (start.width + end.width) / 4;
+  const normalX = -deltaY / length * radius;
+  const normalY = deltaX / length * radius;
+  const startLeftX = formatNumber(start.x + normalX);
+  const startLeftY = formatNumber(start.y + normalY);
+  const endLeftX = formatNumber(end.x + normalX);
+  const endLeftY = formatNumber(end.y + normalY);
+  const endRightX = formatNumber(end.x - normalX);
+  const endRightY = formatNumber(end.y - normalY);
+  const startRightX = formatNumber(start.x - normalX);
+  const startRightY = formatNumber(start.y - normalY);
+  const formattedRadius = formatNumber(radius);
+
+  parts.push(
+    `M ${startLeftX} ${startLeftY}`,
+    `L ${endLeftX} ${endLeftY}`,
+    `A ${formattedRadius} ${formattedRadius} 0 0 0 ${endRightX} ${endRightY}`,
+    `L ${startRightX} ${startRightY}`,
+    `A ${formattedRadius} ${formattedRadius} 0 0 0 ${startLeftX} ${startLeftY}`,
+    'Z',
+  );
 }
 
-function createStrokeGroup(stroke: Stroke) {
-  const group = document.createElementNS(SVG_NAMESPACE, 'g');
-  group.setAttribute('data-ink-stroke', 'true');
-  if (stroke.points.length === 0) return group;
-
-  group.append(createDot(stroke.points[0], stroke.color));
+function createStrokePath(stroke: Stroke) {
+  const path = document.createElementNS(SVG_NAMESPACE, 'path');
+  const parts: string[] = [];
+  if (stroke.points.length > 0) appendCirclePath(parts, stroke.points[0]);
   for (let index = 1; index < stroke.points.length; index += 1) {
-    group.append(createSegment(stroke.points[index - 1], stroke.points[index], stroke.color));
+    appendCapsulePath(parts, stroke.points[index - 1], stroke.points[index]);
   }
-  return group;
+  path.setAttribute('data-ink-stroke', 'true');
+  path.setAttribute('d', parts.join(' '));
+  path.setAttribute('fill', stroke.color);
+  path.setAttribute('fill-rule', 'nonzero');
+  return path;
 }
 
 function createRoot(view: ViewTransform) {
@@ -74,7 +97,7 @@ export function appendVectorStroke(
     root = createRoot(view);
     svg.append(root);
   }
-  root.append(createStrokeGroup(stroke));
+  root.append(createStrokePath(stroke));
 }
 
 export function redrawVectorStrokes(
@@ -84,7 +107,7 @@ export function redrawVectorStrokes(
 ) {
   const root = createRoot(view);
   const fragment = document.createDocumentFragment();
-  strokes.forEach((stroke) => fragment.append(createStrokeGroup(stroke)));
+  strokes.forEach((stroke) => fragment.append(createStrokePath(stroke)));
   root.append(fragment);
   svg.replaceChildren(root);
 }
