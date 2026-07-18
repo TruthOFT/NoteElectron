@@ -1,13 +1,34 @@
-import type { DirtyRect, InkPoint, Stroke } from '../types';
+import type {
+  DirtyRect,
+  InkPoint,
+  Stroke,
+  ViewTransform,
+} from '../types';
+
+const IDENTITY_VIEW: ViewTransform = {
+  scale: 1,
+  offsetX: 0,
+  offsetY: 0,
+};
 
 const getRenderScale = () =>
   Math.min(2, Math.max(1.5, (window.devicePixelRatio || 1) * 1.5));
 
-export function prepareContext(canvas: HTMLCanvasElement) {
+export function prepareContext(
+  canvas: HTMLCanvasElement,
+  view: ViewTransform = IDENTITY_VIEW,
+) {
   const context = canvas.getContext('2d', { alpha: true });
   if (!context) throw new Error('无法创建 Canvas 2D 上下文');
-  const scale = getRenderScale();
-  context.setTransform(scale, 0, 0, scale, 0, 0);
+  const renderScale = getRenderScale();
+  context.setTransform(
+    renderScale * view.scale,
+    0,
+    0,
+    renderScale * view.scale,
+    renderScale * view.offsetX,
+    renderScale * view.offsetY,
+  );
   context.imageSmoothingEnabled = true;
   context.imageSmoothingQuality = 'high';
   return context;
@@ -38,11 +59,15 @@ export function getDirtyRect(points: InkPoint[]): DirtyRect | null {
   };
 }
 
-export function clearCanvas(canvas: HTMLCanvasElement) {
-  const context = prepareContext(canvas);
-  const bounds = canvas.getBoundingClientRect();
-  context.clearRect(0, 0, bounds.width, bounds.height);
-  return context;
+export function clearCanvas(
+  canvas: HTMLCanvasElement,
+  view: ViewTransform = IDENTITY_VIEW,
+) {
+  const context = canvas.getContext('2d', { alpha: true });
+  if (!context) throw new Error('无法创建 Canvas 2D 上下文');
+  context.setTransform(1, 0, 0, 1, 0, 0);
+  context.clearRect(0, 0, canvas.width, canvas.height);
+  return prepareContext(canvas, view);
 }
 
 export function resizeCanvas(canvas: HTMLCanvasElement) {
@@ -111,7 +136,11 @@ export function drawAddedPoints(
   });
 }
 
-export function redrawStrokes(canvas: HTMLCanvasElement, strokes: readonly Stroke[]) {
-  const context = clearCanvas(canvas);
+export function redrawStrokes(
+  canvas: HTMLCanvasElement,
+  strokes: readonly Stroke[],
+  view: ViewTransform = IDENTITY_VIEW,
+) {
+  const context = clearCanvas(canvas, view);
   strokes.forEach((stroke) => drawPoints(context, stroke.points, stroke.color));
 }

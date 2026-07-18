@@ -10,7 +10,12 @@ import {
   redrawStrokes,
   resizeCanvas,
 } from '../render/canvasRenderer';
-import type { DirtyRect, PointerSample, Stroke } from '../types';
+import type {
+  DirtyRect,
+  PointerSample,
+  Stroke,
+  ViewTransform,
+} from '../types';
 
 type InkCanvasOptions = {
   color: string;
@@ -20,17 +25,30 @@ type InkCanvasOptions = {
 };
 
 const FIXED_STABILITY = 80;
+const MIN_ZOOM = 0.25;
+const MAX_ZOOM = 4;
+const ZOOM_STEP = 0.1;
+const ZOOM_CONTROLS_TIMEOUT = 2000;
 
-function samplePointer(event: PointerEvent, canvas: HTMLCanvasElement): PointerSample {
+const clampZoom = (value: number) =>
+  Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, Math.round(value * 10) / 10));
+
+function samplePointer(
+  event: PointerEvent,
+  canvas: HTMLCanvasElement,
+  view: ViewTransform,
+): PointerSample {
   const bounds = canvas.getBoundingClientRect();
   const fallbackPressure = event.pointerType === 'mouse' ? 0.5 : 0.12;
   const pressure = Math.min(
     1,
     Math.max(0, event.pressure > 0 ? event.pressure : fallbackPressure),
   );
+  const screenX = event.clientX - bounds.left;
+  const screenY = event.clientY - bounds.top;
   return {
-    x: event.clientX - bounds.left,
-    y: event.clientY - bounds.top,
+    x: (screenX - view.offsetX) / view.scale,
+    y: (screenY - view.offsetY) / view.scale,
     pressure,
     time: event.timeStamp,
   };
@@ -43,9 +61,27 @@ export default function useInkCanvas(options: InkCanvasOptions) {
   const activeStrokeRef = useRef<Stroke | null>(null);
   const activePointerRef = useRef<number | null>(null);
   const optionsRef = useRef(options);
+  const viewRef = useRef<ViewTransform>({ scale: 1, offsetX: 0, offsetY: 0 });
+  const zoomAtRef = useRef<(scale: number, x?: number, y?: number) => void>(() => {});
+  const zoomTimerRef = useRef<number | null>(null);
   const [history] = useState(() => new StrokeHistory());
   const [, setHistoryVersion] = useState(0);
+  const [zoom, setZoom] = useState(1);
+  const [zoomControlsVisible, setZoomControlsVisible] = useState(false);
   optionsRef.current = options;
+
+  const showZoomControls = () => {
+    setZoomControlsVisible(true);
+    if (zoomTimerRef.current !== null) window.clearTimeout(zoomTimerRef.current);
+    zoomTimerRef.current = window.setTimeout(() => {
+      setZoomControlsVisible(false);
+      zoomTimerRef.current = null;
+    }, ZOOM_CONTROLS_TIMEOUT);
+  };
+
+  useEffect(() => () => {
+    if (zoomTimerRef.current !== null) window.clearTimeout(zoomTimerRef.current);
+  }, []);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -54,11 +90,20 @@ export default function useInkCanvas(options: InkCanvasOptions) {
     if (!canvas || !previewCanvas || !cursor) return undefined;
     let previewDirtyRect: DirtyRect | null = null;
 
-    const redrawBase = () => redrawStrokes(canvas, history.all);
+    const redrawBase = () => redrawStrokes(canvas, history.all, viewRef.current);
+
+    const updateGrid = () => {
+      const stage = canvas.parentElement;
+      if (!stage) return;
+      const view = viewRef.current;
+      stage.style.setProperty('--grid-size', `${20 * view.scale}px`);
+      stage.style.setProperty('--grid-position-x', `${view.offsetX}px`);
+      stage.style.setProperty('--grid-position-y', `${view.offsetY}px`);
+    };
 
     const clearPreview = () => {
       if (!previewDirtyRect) return;
-      const context = prepareContext(previewCanvas);
+      const context = prepareContext(previewCanvas, viewRef.current);
       context.clearRect(
         previewDirtyRect.x,
         previewDirtyRect.y,
@@ -73,7 +118,7 @@ export default function useInkCanvas(options: InkCanvasOptions) {
       if (!stroke || stroke.rawPoints.length === 0) return;
 
       const stableTail = stroke.points.at(-1);
-      const context = prepareContext(previewCanvas);
+      const context = prepareContext(previewCanvas, viewRef.current);
       if (stableTail) {
         const tailPoints = [
           stableTail,
@@ -94,18 +139,18 @@ export default function useInkCanvas(options: InkCanvasOptions) {
       if (previewChanged) previewDirtyRect = null;
       redrawBase();
       drawPreview(activeStrokeRef.current);
+      updateGrid();
     };
 
     const updateCursor = (event: PointerEvent) => {
       const bounds = canvas.getBoundingClientRect();
       const { brushSize, color } = optionsRef.current;
-      const size = Math.max(1.5, brushSize * 0.75);
+      const size = Math.max(1.5, brushSize * viewRef.current.scale * 0.78);
       const x = event.clientX - bounds.left;
       const y = event.clientY - bounds.top;
       cursor.style.width = `${size}px`;
       cursor.style.height = `${size}px`;
-      cursor.style.borderColor = color;
-      cursor.style.backgroundColor = `${color}1f`;
+      cursor.style.backgroundColor = color;
       cursor.style.transform = `translate3d(${x - size / 2}px, ${y - size / 2}px, 0)`;
       cursor.dataset.visible = activePointerRef.current === null ? 'true' : 'false';
     };
@@ -114,9 +159,17 @@ export default function useInkCanvas(options: InkCanvasOptions) {
       const stroke = activeStrokeRef.current;
       if (!stroke) return;
       const previous = stroke.points.at(-1);
-      const addedPoints = appendSample(stroke, samplePointer(event, canvas));
+      const addedPoints = appendSample(
+        stroke,
+        samplePointer(event, canvas, viewRef.current),
+      );
       if (addedPoints.length === 0) return;
-      drawAddedPoints(prepareContext(canvas), previous, addedPoints, stroke.color);
+      drawAddedPoints(
+        prepareContext(canvas, viewRef.current),
+        previous,
+        addedPoints,
+        stroke.color,
+      );
     };
 
     const finishActiveStroke = () => {
@@ -125,7 +178,12 @@ export default function useInkCanvas(options: InkCanvasOptions) {
       const previous = stroke.points.at(-1);
       const addedPoints = finishStroke(stroke);
       if (addedPoints.length > 0) {
-        drawAddedPoints(prepareContext(canvas), previous, addedPoints, stroke.color);
+        drawAddedPoints(
+          prepareContext(canvas, viewRef.current),
+          previous,
+          addedPoints,
+          stroke.color,
+        );
       }
       clearPreview();
     };
@@ -160,6 +218,41 @@ export default function useInkCanvas(options: InkCanvasOptions) {
 
     const supportsRawUpdate = 'onpointerrawupdate' in window;
 
+    zoomAtRef.current = (requestedScale, anchorX, anchorY) => {
+      const nextScale = clampZoom(requestedScale);
+      const currentView = viewRef.current;
+      const bounds = canvas.getBoundingClientRect();
+      const screenX = anchorX ?? bounds.width / 2;
+      const screenY = anchorY ?? bounds.height / 2;
+      const worldX = (screenX - currentView.offsetX) / currentView.scale;
+      const worldY = (screenY - currentView.offsetY) / currentView.scale;
+
+      viewRef.current = {
+        scale: nextScale,
+        offsetX: screenX - worldX * nextScale,
+        offsetY: screenY - worldY * nextScale,
+      };
+      setZoom(nextScale);
+      showZoomControls();
+      previewDirtyRect = null;
+      clearCanvas(previewCanvas, viewRef.current);
+      redrawBase();
+      drawPreview(activeStrokeRef.current);
+      updateGrid();
+    };
+
+    const handleWheel = (event: WheelEvent) => {
+      if (!event.ctrlKey) return;
+      event.preventDefault();
+      const bounds = canvas.getBoundingClientRect();
+      const direction = event.deltaY < 0 ? 1 : -1;
+      zoomAtRef.current(
+        viewRef.current.scale + direction * ZOOM_STEP,
+        event.clientX - bounds.left,
+        event.clientY - bounds.top,
+      );
+    };
+
     const handlePointerMove = (event: PointerEvent) => {
       updateCursor(event);
       if (!supportsRawUpdate) processActiveInput(event);
@@ -191,8 +284,10 @@ export default function useInkCanvas(options: InkCanvasOptions) {
     observer.observe(canvas);
     window.addEventListener('resize', resizeCanvases);
     resizeCanvases();
+    updateGrid();
 
     canvas.addEventListener('pointerdown', handlePointerDown);
+    canvas.addEventListener('wheel', handleWheel, { passive: false });
     canvas.addEventListener('pointermove', handlePointerMove);
     if (supportsRawUpdate) canvas.addEventListener('pointerrawupdate', handlePointerRawUpdate);
     canvas.addEventListener('pointerup', finishActivePointer);
@@ -204,6 +299,7 @@ export default function useInkCanvas(options: InkCanvasOptions) {
       observer.disconnect();
       window.removeEventListener('resize', resizeCanvases);
       canvas.removeEventListener('pointerdown', handlePointerDown);
+      canvas.removeEventListener('wheel', handleWheel);
       canvas.removeEventListener('pointermove', handlePointerMove);
       if (supportsRawUpdate) {
         canvas.removeEventListener('pointerrawupdate', handlePointerRawUpdate);
@@ -212,6 +308,7 @@ export default function useInkCanvas(options: InkCanvasOptions) {
       canvas.removeEventListener('pointercancel', finishActivePointer);
       canvas.removeEventListener('pointerenter', updateCursor);
       canvas.removeEventListener('pointerleave', hideCursor);
+      zoomAtRef.current = () => {};
     };
   }, [history]);
 
@@ -219,8 +316,8 @@ export default function useInkCanvas(options: InkCanvasOptions) {
     const canvas = canvasRef.current;
     const previewCanvas = previewCanvasRef.current;
     if (!canvas || !previewCanvas) return;
-    redrawStrokes(canvas, history.all);
-    clearCanvas(previewCanvas);
+    redrawStrokes(canvas, history.all, viewRef.current);
+    clearCanvas(previewCanvas, viewRef.current);
   };
 
   const undo = () => {
@@ -237,11 +334,20 @@ export default function useInkCanvas(options: InkCanvasOptions) {
     setHistoryVersion((version) => version + 1);
   };
 
+  const zoomIn = () => zoomAtRef.current(viewRef.current.scale + ZOOM_STEP);
+  const zoomOut = () => zoomAtRef.current(viewRef.current.scale - ZOOM_STEP);
+
   return {
     canvasRef,
     previewCanvasRef,
     cursorRef,
     canUndo: !history.isEmpty,
+    zoom,
+    zoomControlsVisible,
+    canZoomIn: zoom < MAX_ZOOM,
+    canZoomOut: zoom > MIN_ZOOM,
+    zoomIn,
+    zoomOut,
     undo,
     clear,
   };

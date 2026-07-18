@@ -1,21 +1,47 @@
-.ink-panel {
-  display: grid;
-  grid-template-rows: 64px minmax(0, 1fr);
-  height: calc(100vh - 176px);
-  min-height: 520px;
+.ink-panel,
+.canvas-stage {
+  position: relative;
+  width: 100%;
+  height: 100%;
   overflow: hidden;
-  border-color: #e3e6ef;
-  background: #fff;
-  box-shadow: 0 18px 55px rgb(58 67 105 / 8%);
+}
+
+.canvas-stage {
+  --grid-size: 20px;
+  --grid-position-x: 0px;
+  --grid-position-y: 0px;
+  background-color: #fff;
+  background-image: radial-gradient(#d8ddea 0.7px, transparent 0.7px);
+  background-position: var(--grid-position-x) var(--grid-position-y);
+  background-size: var(--grid-size) var(--grid-size);
 }
 
 .ink-toolbar {
+  position: fixed;
+  top: 0;
+  left: 0;
+  z-index: 20;
   display: flex;
+  height: 56px;
   align-items: center;
-  justify-content: space-between;
-  padding: 0 18px;
-  border-bottom: 1px solid #e8eaf1;
-  background: rgb(255 255 255 / 94%);
+  gap: 10px;
+  padding: 7px 10px 7px 6px;
+  border: 1px solid rgb(218 222 232 / 92%);
+  border-radius: 16px;
+  background: rgb(255 255 255 / 92%);
+  box-shadow: 0 12px 32px rgb(32 39 61 / 14%);
+  backdrop-filter: blur(16px);
+  user-select: none;
+  will-change: transform;
+}
+
+.toolbar-drag-handle {
+  cursor: grab;
+  touch-action: none;
+}
+
+.toolbar-drag-handle:active {
+  cursor: grabbing;
 }
 
 .ink-color {
@@ -30,13 +56,38 @@
   transform: scale(1.08);
 }
 
-.canvas-stage {
-  position: relative;
-  min-height: 0;
-  overflow: hidden;
-  background-color: #fff;
-  background-image: radial-gradient(#d8ddea 0.7px, transparent 0.7px);
-  background-size: 20px 20px;
+.brush-presets {
+  height: 36px;
+}
+
+.brush-preset {
+  display: grid;
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  place-items: center;
+  border: 1px solid transparent;
+  border-radius: 10px;
+  background: transparent;
+  cursor: pointer;
+  transition: border-color 120ms ease, background-color 120ms ease;
+}
+
+.brush-preset:hover {
+  background: var(--mantine-color-gray-0);
+}
+
+.brush-preset[data-active='true'] {
+  border-color: var(--mantine-color-indigo-2);
+  background: var(--mantine-color-indigo-0);
+}
+
+.brush-preset-dot {
+  display: block;
+  min-width: 4px;
+  min-height: 4px;
+  border-radius: 50%;
+  box-shadow: 0 0 0 1px rgb(255 255 255 / 72%);
 }
 
 .ink-canvas {
@@ -63,24 +114,37 @@
   top: 0;
   left: 0;
   z-index: 2;
-  border: 1.5px solid #111827;
   border-radius: 50%;
   pointer-events: none;
   opacity: 0;
-  will-change: transform;
+  will-change: width, height, transform;
 }
 
 .brush-cursor[data-visible='true'] {
   opacity: 1;
 }
 
-@media (max-width: 900px) {
-  .ink-panel {
-    height: calc(100vh - 158px);
-  }
+.zoom-controls {
+  position: fixed;
+  right: 20px;
+  bottom: 20px;
+  z-index: 20;
+  padding: 5px;
+  background: rgb(255 255 255 / 92%);
+  backdrop-filter: blur(14px);
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(8px);
+  transition: opacity 160ms ease, transform 160ms ease;
+}
 
-  .ink-toolbar {
-    overflow-x: auto;
-    gap: 18px;
-  }
+.zoom-controls[data-visible='true'] {
+  opacity: 1;
+  pointer-events: auto;
+  transform: translateY(0);
+}
+
+.zoom-value {
+  min-width: 52px;
+  font-variant-numeric: tabular-nums;
 }

@@ -36,3 +36,9 @@ export type DirtyRect = {
   width: number;
   height: number;
 };
+
+export type ViewTransform = {
+  scale: number;
+  offsetX: number;
+  offsetY: number;
+};
