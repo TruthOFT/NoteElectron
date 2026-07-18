@@ -21,6 +21,7 @@ export default function InkCanvas() {
     )));
   };
   const {
+    vectorLayerRef,
     canvasRef,
     previewCanvasRef,
     cursorRef,
@@ -55,7 +56,13 @@ export default function InkCanvas() {
       />
 
       <div className="canvas-stage">
-        <canvas ref={canvasRef} className="ink-canvas ink-base-canvas" />
+        <svg
+          ref={vectorLayerRef}
+          className="ink-vector-layer"
+          xmlns="http://www.w3.org/2000/svg"
+          aria-hidden="true"
+        />
+        <canvas ref={canvasRef} className="ink-canvas ink-live-canvas" />
         <canvas ref={previewCanvasRef} className="ink-canvas ink-preview-canvas" />
         <div ref={cursorRef} className="brush-cursor" />
       </div>

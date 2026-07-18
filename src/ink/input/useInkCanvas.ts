@@ -7,9 +7,13 @@ import {
   drawPoints,
   getDirtyRect,
   prepareContext,
-  redrawStrokes,
   resizeCanvas,
 } from '../render/canvasRenderer';
+import {
+  appendVectorStroke,
+  redrawVectorStrokes,
+  setVectorView,
+} from '../render/svgRenderer';
 import type {
   DirtyRect,
   PointerSample,
@@ -55,6 +59,7 @@ function samplePointer(
 }
 
 export default function useInkCanvas(options: InkCanvasOptions) {
+  const vectorLayerRef = useRef<SVGSVGElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const previewCanvasRef = useRef<HTMLCanvasElement>(null);
   const cursorRef = useRef<HTMLDivElement>(null);
@@ -84,13 +89,18 @@ export default function useInkCanvas(options: InkCanvasOptions) {
   }, []);
 
   useEffect(() => {
+    const vectorLayer = vectorLayerRef.current;
     const canvas = canvasRef.current;
     const previewCanvas = previewCanvasRef.current;
     const cursor = cursorRef.current;
-    if (!canvas || !previewCanvas || !cursor) return undefined;
+    if (!vectorLayer || !canvas || !previewCanvas || !cursor) return undefined;
     let previewDirtyRect: DirtyRect | null = null;
 
-    const redrawBase = () => redrawStrokes(canvas, history.all, viewRef.current);
+    const redrawLiveStroke = () => {
+      const context = clearCanvas(canvas, viewRef.current);
+      const stroke = activeStrokeRef.current;
+      if (stroke) drawPoints(context, stroke.points, stroke.color);
+    };
 
     const updateGrid = () => {
       const stage = canvas.parentElement;
@@ -137,8 +147,9 @@ export default function useInkCanvas(options: InkCanvasOptions) {
       const previewChanged = resizeCanvas(previewCanvas);
       if (!baseChanged && !previewChanged) return;
       if (previewChanged) previewDirtyRect = null;
-      redrawBase();
+      redrawLiveStroke();
       drawPreview(activeStrokeRef.current);
+      setVectorView(vectorLayer, viewRef.current);
       updateGrid();
     };
 
@@ -174,7 +185,7 @@ export default function useInkCanvas(options: InkCanvasOptions) {
 
     const finishActiveStroke = () => {
       const stroke = activeStrokeRef.current;
-      if (!stroke || stroke.rawPoints.length === 0) return;
+      if (!stroke || stroke.rawPoints.length === 0) return false;
       const previous = stroke.points.at(-1);
       const addedPoints = finishStroke(stroke);
       if (addedPoints.length > 0) {
@@ -186,6 +197,10 @@ export default function useInkCanvas(options: InkCanvasOptions) {
         );
       }
       clearPreview();
+      history.add(stroke);
+      appendVectorStroke(vectorLayer, stroke, viewRef.current);
+      clearCanvas(canvas, viewRef.current);
+      return true;
     };
 
     const handlePointerDown = (event: PointerEvent) => {
@@ -201,7 +216,6 @@ export default function useInkCanvas(options: InkCanvasOptions) {
         pressureSensitivity: settings.pressureSensitivity,
         stability: FIXED_STABILITY,
       });
-      history.add(stroke);
       activeStrokeRef.current = stroke;
       appendPoint(event);
       drawPreview(stroke);
@@ -236,8 +250,9 @@ export default function useInkCanvas(options: InkCanvasOptions) {
       showZoomControls();
       previewDirtyRect = null;
       clearCanvas(previewCanvas, viewRef.current);
-      redrawBase();
+      redrawLiveStroke();
       drawPreview(activeStrokeRef.current);
+      setVectorView(vectorLayer, viewRef.current);
       updateGrid();
     };
 
@@ -266,14 +281,14 @@ export default function useInkCanvas(options: InkCanvasOptions) {
 
     const finishActivePointer = (event: PointerEvent) => {
       if (activePointerRef.current !== event.pointerId) return;
-      finishActiveStroke();
+      const committed = finishActiveStroke();
       activePointerRef.current = null;
       activeStrokeRef.current = null;
       if (canvas.hasPointerCapture(event.pointerId)) {
         canvas.releasePointerCapture(event.pointerId);
       }
       updateCursor(event);
-      setHistoryVersion((version) => version + 1);
+      if (committed) setHistoryVersion((version) => version + 1);
     };
 
     const hideCursor = () => {
@@ -283,6 +298,7 @@ export default function useInkCanvas(options: InkCanvasOptions) {
     const observer = new ResizeObserver(resizeCanvases);
     observer.observe(canvas);
     window.addEventListener('resize', resizeCanvases);
+    redrawVectorStrokes(vectorLayer, history.all, viewRef.current);
     resizeCanvases();
     updateGrid();
 
@@ -313,10 +329,12 @@ export default function useInkCanvas(options: InkCanvasOptions) {
   }, [history]);
 
   const redrawAll = () => {
+    const vectorLayer = vectorLayerRef.current;
     const canvas = canvasRef.current;
     const previewCanvas = previewCanvasRef.current;
-    if (!canvas || !previewCanvas) return;
-    redrawStrokes(canvas, history.all, viewRef.current);
+    if (!vectorLayer || !canvas || !previewCanvas) return;
+    redrawVectorStrokes(vectorLayer, history.all, viewRef.current);
+    clearCanvas(canvas, viewRef.current);
     clearCanvas(previewCanvas, viewRef.current);
   };
 
@@ -338,6 +356,7 @@ export default function useInkCanvas(options: InkCanvasOptions) {
   const zoomOut = () => zoomAtRef.current(viewRef.current.scale - ZOOM_STEP);
 
   return {
+    vectorLayerRef,
     canvasRef,
     previewCanvasRef,
     cursorRef,

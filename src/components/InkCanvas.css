@@ -90,22 +90,33 @@
   box-shadow: 0 0 0 1px rgb(255 255 255 / 72%);
 }
 
+.ink-vector-layer,
 .ink-canvas {
   position: absolute;
   inset: 0;
   display: block;
   width: 100%;
   height: 100%;
+}
+
+.ink-vector-layer {
+  z-index: 0;
+  overflow: visible;
+  pointer-events: none;
+  shape-rendering: geometricPrecision;
+}
+
+.ink-canvas {
   touch-action: none;
   cursor: none;
 }
 
-.ink-base-canvas {
-  z-index: 0;
+.ink-live-canvas {
+  z-index: 1;
 }
 
 .ink-preview-canvas {
-  z-index: 1;
+  z-index: 2;
   pointer-events: none;
 }
 
@@ -113,7 +124,7 @@
   position: absolute;
   top: 0;
   left: 0;
-  z-index: 2;
+  z-index: 3;
   border-radius: 50%;
   pointer-events: none;
   opacity: 0;
