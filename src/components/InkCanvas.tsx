@@ -44,6 +44,7 @@ type DirtyRect = {
 };
 
 const COLORS = ['#111827', '#4263eb', '#0ca678', '#e03131', '#9c36b5'];
+const FIXED_STABILITY = 80;
 
 const clamp = (value: number, min: number, max: number) =>
   Math.min(max, Math.max(min, value));
@@ -167,8 +168,8 @@ function stabilizePoint(
     : 1;
   const turn = Math.acos(cosine);
   const stabilityRatio = stability / 100;
-  const maximumWeight = 0.02 + stabilityRatio * 0.2;
-  const minimumWeight = 0.005 + stabilityRatio * 0.015;
+  const maximumWeight = 0.04 + stabilityRatio * 0.24;
+  const minimumWeight = 0.01 + stabilityRatio * 0.025;
   const positionWeight = clamp(
     maximumWeight * (1 - turn / (Math.PI * 0.72)),
     minimumWeight,
@@ -194,6 +195,50 @@ function stabilizePoint(
   };
 }
 
+function stabilizeStrokeStart(points: InkPoint[], stability: number): InkPoint {
+  const start = points[0];
+  if (points.length < 3) return start;
+
+  const next = points[1];
+  const guide = points[Math.min(3, points.length - 1)];
+  const directionX = guide.x - next.x;
+  const directionY = guide.y - next.y;
+  const directionLength = Math.hypot(directionX, directionY);
+  if (directionLength < 0.01) return start;
+
+  const unitX = directionX / directionLength;
+  const unitY = directionY / directionLength;
+  const startOffsetX = start.x - next.x;
+  const startOffsetY = start.y - next.y;
+  const projectionLength = startOffsetX * unitX + startOffsetY * unitY;
+  const projectedX = next.x + unitX * projectionLength;
+  const projectedY = next.y + unitY * projectionLength;
+  const lateralError = Math.hypot(projectedX - start.x, projectedY - start.y);
+
+  const firstDirectionX = next.x - start.x;
+  const firstDirectionY = next.y - start.y;
+  const firstDirectionLength = Math.hypot(firstDirectionX, firstDirectionY);
+  const cosine = firstDirectionLength > 0
+    ? clamp(
+      (firstDirectionX * directionX + firstDirectionY * directionY)
+        / (firstDirectionLength * directionLength),
+      -1,
+      1,
+    )
+    : 1;
+  const turn = Math.acos(cosine);
+  const turnFactor = clamp((turn - 0.12) / 1.05, 0, 1);
+  const errorFactor = clamp(lateralError / Math.max(0.6, start.width * 0.28), 0, 1);
+  const correction = Math.max(turnFactor, errorFactor * 0.72)
+    * (0.68 + stability / 100 * 0.2);
+
+  return {
+    ...start,
+    x: start.x + (projectedX - start.x) * correction,
+    y: start.y + (projectedY - start.y) * correction,
+  };
+}
+
 export default function InkCanvas() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const previewCanvasRef = useRef<HTMLCanvasElement>(null);
@@ -205,12 +250,10 @@ export default function InkCanvas() {
   const brushSizeRef = useRef(8);
   const sharpnessRef = useRef(75);
   const pressureSensitivityRef = useRef(55);
-  const stabilityRef = useRef(25);
   const [color, setColor] = useState(COLORS[0]);
   const [brushSize, setBrushSize] = useState(8);
   const [sharpness, setSharpness] = useState(75);
   const [pressureSensitivity, setPressureSensitivity] = useState(55);
-  const [stability, setStability] = useState(25);
   const [, setHistoryVersion] = useState(0);
 
   useEffect(() => {
@@ -228,10 +271,6 @@ export default function InkCanvas() {
   useEffect(() => {
     pressureSensitivityRef.current = pressureSensitivity;
   }, [pressureSensitivity]);
-
-  useEffect(() => {
-    stabilityRef.current = stability;
-  }, [stability]);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -326,7 +365,7 @@ export default function InkCanvas() {
       const sharpnessRatio = stroke.sharpness / 100;
       const sensitivityRatio = stroke.pressureSensitivity / 100;
       const minimumWidthRatio = 0.42 - sharpnessRatio * 0.34;
-      const pressureExponent = 1.8 - sensitivityRatio * 1.55;
+      const pressureExponent = 0.25 + sensitivityRatio * 1.55;
       const pressureFactor = minimumWidthRatio
         + (1 - minimumWidthRatio) * Math.pow(pressure, pressureExponent);
       const speedStrength = 0.03 + sharpnessRatio * 0.27;
@@ -354,8 +393,9 @@ export default function InkCanvas() {
       if (count < stroke.liveTailPoints + 2) return;
 
       if (stroke.points.length === 0) {
-        stroke.points.push(stroke.rawPoints[0]);
-        drawDot(prepareContext(canvas), stroke.rawPoints[0], stroke.color);
+        const stableStart = stabilizeStrokeStart(stroke.rawPoints, stroke.stability);
+        stroke.points.push(stableStart);
+        drawDot(prepareContext(canvas), stableStart, stroke.color);
       }
 
       const stableIndex = count - stroke.liveTailPoints - 1;
@@ -378,7 +418,9 @@ export default function InkCanvas() {
       const context = prepareContext(canvas);
 
       for (let index = stroke.points.length; index < stroke.rawPoints.length; index += 1) {
-        const point = index > 0 && index < stroke.rawPoints.length - 1
+        const point = index === 0
+          ? stabilizeStrokeStart(stroke.rawPoints, stroke.stability)
+          : index < stroke.rawPoints.length - 1
           ? stabilizePoint(
             stroke.rawPoints[index - 1],
             stroke.rawPoints[index],
@@ -405,8 +447,8 @@ export default function InkCanvas() {
         size: brushSizeRef.current,
         sharpness: sharpnessRef.current,
         pressureSensitivity: pressureSensitivityRef.current,
-        stability: stabilityRef.current,
-        liveTailPoints: 2 + Math.round(stabilityRef.current / 25),
+        stability: FIXED_STABILITY,
+        liveTailPoints: 2 + Math.round(FIXED_STABILITY / 25),
         rawPoints: [],
         points: [],
       };
@@ -439,7 +481,6 @@ export default function InkCanvas() {
 
     const finishStroke = (event: PointerEvent) => {
       if (activePointerRef.current !== event.pointerId) return;
-      appendPoint(event);
       finishActiveStroke();
       activePointerRef.current = null;
       activeStrokeRef.current = null;
@@ -537,7 +578,7 @@ export default function InkCanvas() {
                 <div>
                   <Group justify="space-between" mb={6}>
                     <Text size="sm">压力灵敏度</Text>
-                    <Text size="xs" c="dimmed">{pressureSensitivity}%</Text>
+                    <Text size="xs" c="dimmed">{pressureSensitivity}% · 越小越省力</Text>
                   </Group>
                   <Slider
                     value={pressureSensitivity}
@@ -550,24 +591,6 @@ export default function InkCanvas() {
                     step={5}
                     label={(value) => `${value}%`}
                     aria-label="压力灵敏度"
-                  />
-                </div>
-                <div>
-                  <Group justify="space-between" mb={6}>
-                    <Text size="sm">画笔稳定性</Text>
-                    <Text size="xs" c="dimmed">{stability}%</Text>
-                  </Group>
-                  <Slider
-                    value={stability}
-                    onChange={(value) => {
-                      stabilityRef.current = value;
-                      setStability(value);
-                    }}
-                    min={0}
-                    max={100}
-                    step={5}
-                    label={(value) => `${value}%`}
-                    aria-label="画笔稳定性"
                   />
                 </div>
               </Stack>
