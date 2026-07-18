@@ -474,7 +474,8 @@ export default function InkCanvas() {
       if (!supportsRawUpdate) processActiveInput(event);
     };
 
-    const handlePointerRawUpdate = (event: PointerEvent) => {
+    const handlePointerRawUpdate = (event: Event) => {
+      if (!(event instanceof PointerEvent)) return;
       updateCursor(event);
       processActiveInput(event);
     };
