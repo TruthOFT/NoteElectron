@@ -5,7 +5,9 @@ import {
   Divider,
   Group,
   Paper,
+  Popover,
   Slider,
+  Stack,
   Text,
   Tooltip,
 } from '@mantine/core';
@@ -15,6 +17,8 @@ import './InkCanvas.css';
 type InkPoint = {
   x: number;
   y: number;
+  rawX: number;
+  rawY: number;
   pressure: number;
   velocity: number;
   width: number;
@@ -24,8 +28,19 @@ type InkPoint = {
 type Stroke = {
   color: string;
   size: number;
+  sharpness: number;
+  pressureSensitivity: number;
+  stability: number;
+  liveTailPoints: number;
   rawPoints: InkPoint[];
   points: InkPoint[];
+};
+
+type DirtyRect = {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
 };
 
 const COLORS = ['#111827', '#4263eb', '#0ca678', '#e03131', '#9c36b5'];
@@ -37,13 +52,38 @@ const getRenderScale = () =>
   clamp((window.devicePixelRatio || 1) * 1.5, 1.5, 2);
 
 function prepareContext(canvas: HTMLCanvasElement) {
-  const context = canvas.getContext('2d');
+  const context = canvas.getContext('2d', { alpha: true });
   if (!context) throw new Error('无法创建 Canvas 2D 上下文');
   const scale = getRenderScale();
   context.setTransform(scale, 0, 0, scale, 0, 0);
   context.imageSmoothingEnabled = true;
   context.imageSmoothingQuality = 'high';
   return context;
+}
+
+function getDirtyRect(points: InkPoint[]): DirtyRect | null {
+  if (points.length === 0) return null;
+  let minX = points[0].x;
+  let minY = points[0].y;
+  let maxX = points[0].x;
+  let maxY = points[0].y;
+  let maxWidth = points[0].width;
+
+  points.forEach((point) => {
+    minX = Math.min(minX, point.x);
+    minY = Math.min(minY, point.y);
+    maxX = Math.max(maxX, point.x);
+    maxY = Math.max(maxY, point.y);
+    maxWidth = Math.max(maxWidth, point.width);
+  });
+
+  const padding = maxWidth / 2 + 3;
+  return {
+    x: minX - padding,
+    y: minY - padding,
+    width: maxX - minX + padding * 2,
+    height: maxY - minY + padding * 2,
+  };
 }
 
 function clearCanvas(canvas: HTMLCanvasElement) {
@@ -105,7 +145,12 @@ function drawPoints(
   }
 }
 
-function stabilizePoint(previous: InkPoint, current: InkPoint, next: InkPoint): InkPoint {
+function stabilizePoint(
+  previous: InkPoint,
+  current: InkPoint,
+  next: InkPoint,
+  stability: number,
+): InkPoint {
   const incomingX = current.x - previous.x;
   const incomingY = current.y - previous.y;
   const outgoingX = next.x - current.x;
@@ -121,8 +166,15 @@ function stabilizePoint(previous: InkPoint, current: InkPoint, next: InkPoint): 
     )
     : 1;
   const turn = Math.acos(cosine);
-  const positionWeight = clamp(0.16 * (1 - turn / (Math.PI * 0.72)), 0.015, 0.16);
-  const widthWeight = Math.min(0.1, positionWeight);
+  const stabilityRatio = stability / 100;
+  const maximumWeight = 0.02 + stabilityRatio * 0.2;
+  const minimumWeight = 0.005 + stabilityRatio * 0.015;
+  const positionWeight = clamp(
+    maximumWeight * (1 - turn / (Math.PI * 0.72)),
+    minimumWeight,
+    maximumWeight,
+  );
+  const widthWeight = Math.min(stabilityRatio * 0.12, positionWeight);
 
   return {
     x: previous.x * positionWeight
@@ -131,6 +183,8 @@ function stabilizePoint(previous: InkPoint, current: InkPoint, next: InkPoint): 
     y: previous.y * positionWeight
       + current.y * (1 - positionWeight * 2)
       + next.y * positionWeight,
+    rawX: current.rawX,
+    rawY: current.rawY,
     pressure: current.pressure,
     velocity: current.velocity,
     width: previous.width * widthWeight
@@ -149,8 +203,14 @@ export default function InkCanvas() {
   const activePointerRef = useRef<number | null>(null);
   const colorRef = useRef(COLORS[0]);
   const brushSizeRef = useRef(8);
+  const sharpnessRef = useRef(75);
+  const pressureSensitivityRef = useRef(55);
+  const stabilityRef = useRef(25);
   const [color, setColor] = useState(COLORS[0]);
   const [brushSize, setBrushSize] = useState(8);
+  const [sharpness, setSharpness] = useState(75);
+  const [pressureSensitivity, setPressureSensitivity] = useState(55);
+  const [stability, setStability] = useState(25);
   const [, setHistoryVersion] = useState(0);
 
   useEffect(() => {
@@ -162,28 +222,60 @@ export default function InkCanvas() {
   }, [brushSize]);
 
   useEffect(() => {
+    sharpnessRef.current = sharpness;
+  }, [sharpness]);
+
+  useEffect(() => {
+    pressureSensitivityRef.current = pressureSensitivity;
+  }, [pressureSensitivity]);
+
+  useEffect(() => {
+    stabilityRef.current = stability;
+  }, [stability]);
+
+  useEffect(() => {
     const canvas = canvasRef.current;
     const previewCanvas = previewCanvasRef.current;
     const cursor = cursorRef.current;
     if (!canvas || !previewCanvas || !cursor) return undefined;
+    let previewDirtyRect: DirtyRect | null = null;
 
     const redrawBase = () => {
       const context = clearCanvas(canvas);
       strokesRef.current.forEach((stroke) => drawPoints(context, stroke.points, stroke.color));
     };
 
+    const clearPreview = () => {
+      if (!previewDirtyRect) return;
+      const context = prepareContext(previewCanvas);
+      context.clearRect(
+        previewDirtyRect.x,
+        previewDirtyRect.y,
+        previewDirtyRect.width,
+        previewDirtyRect.height,
+      );
+      previewDirtyRect = null;
+    };
+
     const drawPreview = (stroke: Stroke | null) => {
-      const context = clearCanvas(previewCanvas);
+      clearPreview();
       if (!stroke || stroke.rawPoints.length === 0) return;
 
       const tip = stroke.rawPoints.at(-1);
       if (!tip) return;
       const stableTail = stroke.points.at(-1);
+      const context = prepareContext(previewCanvas);
 
       if (stableTail) {
-        drawSegment(context, stableTail, tip, stroke.color);
+        const tailPoints = [
+          stableTail,
+          ...stroke.rawPoints.slice(stroke.points.length),
+        ];
+        drawPoints(context, tailPoints, stroke.color);
+        previewDirtyRect = getDirtyRect(tailPoints);
       } else {
         drawPoints(context, stroke.rawPoints, stroke.color);
+        previewDirtyRect = getDirtyRect(stroke.rawPoints);
       }
     };
 
@@ -191,13 +283,14 @@ export default function InkCanvas() {
       const baseChanged = resizeCanvas(canvas);
       const previewChanged = resizeCanvas(previewCanvas);
       if (!baseChanged && !previewChanged) return;
+      if (previewChanged) previewDirtyRect = null;
       redrawBase();
       drawPreview(activeStrokeRef.current);
     };
 
     const updateCursor = (event: PointerEvent) => {
       const bounds = canvas.getBoundingClientRect();
-      const size = brushSizeRef.current;
+      const size = Math.max(1.5, brushSizeRef.current * 0.75);
       const x = event.clientX - bounds.left;
       const y = event.clientY - bounds.top;
       cursor.style.width = `${size}px`;
@@ -205,33 +298,47 @@ export default function InkCanvas() {
       cursor.style.borderColor = colorRef.current;
       cursor.style.backgroundColor = `${colorRef.current}1f`;
       cursor.style.transform = `translate3d(${x - size / 2}px, ${y - size / 2}px, 0)`;
-      cursor.dataset.visible = 'true';
+      cursor.dataset.visible = activePointerRef.current === null ? 'true' : 'false';
     };
 
-    const toPoint = (event: PointerEvent, previous?: InkPoint): InkPoint => {
+    const toPoint = (event: PointerEvent, stroke: Stroke, previous?: InkPoint): InkPoint => {
       const bounds = canvas.getBoundingClientRect();
-      const x = event.clientX - bounds.left;
-      const y = event.clientY - bounds.top;
+      const rawX = event.clientX - bounds.left;
+      const rawY = event.clientY - bounds.top;
       const fallbackPressure = event.pointerType === 'mouse' ? 0.5 : 0.12;
       const rawPressure = clamp(event.pressure > 0 ? event.pressure : fallbackPressure, 0, 1);
       const deltaTime = previous ? Math.max(1, event.timeStamp - previous.time) : 1;
-      const distance = previous ? Math.hypot(x - previous.x, y - previous.y) : 0;
+      const distance = previous ? Math.hypot(rawX - previous.rawX, rawY - previous.rawY) : 0;
       const rawVelocity = distance / deltaTime;
+      const dampingResponse = 1 - stroke.stability / 100 * 0.55;
+      const x = previous
+        ? previous.x + (rawX - previous.x) * dampingResponse
+        : rawX;
+      const y = previous
+        ? previous.y + (rawY - previous.y) * dampingResponse
+        : rawY;
       const pressure = previous
         ? previous.pressure * 0.15 + rawPressure * 0.85
         : rawPressure;
       const velocity = previous
         ? previous.velocity * 0.25 + rawVelocity * 0.75
         : 0;
-      const pressureFactor = 0.24 + 0.76 * Math.pow(pressure, 0.68);
-      const speedFactor = clamp(1.06 - velocity * 0.18, 0.42, 1);
-      const targetWidth = Math.max(0.8, brushSizeRef.current * pressureFactor * speedFactor);
+      const sharpnessRatio = stroke.sharpness / 100;
+      const sensitivityRatio = stroke.pressureSensitivity / 100;
+      const minimumWidthRatio = 0.42 - sharpnessRatio * 0.34;
+      const pressureExponent = 1.8 - sensitivityRatio * 1.55;
+      const pressureFactor = minimumWidthRatio
+        + (1 - minimumWidthRatio) * Math.pow(pressure, pressureExponent);
+      const speedStrength = 0.03 + sharpnessRatio * 0.27;
+      const speedFloor = 0.85 - sharpnessRatio * 0.6;
+      const speedFactor = clamp(1.06 - velocity * speedStrength, speedFloor, 1);
+      const targetWidth = Math.max(0.8, stroke.size * pressureFactor * speedFactor);
       const widthResponse = previous && targetWidth < previous.width ? 0.52 : 0.84;
       const width = previous
         ? previous.width + (targetWidth - previous.width) * widthResponse
         : targetWidth;
 
-      return { x, y, pressure, velocity, width, time: event.timeStamp };
+      return { x, y, rawX, rawY, pressure, velocity, width, time: event.timeStamp };
     };
 
     const appendPoint = (event: PointerEvent) => {
@@ -239,22 +346,24 @@ export default function InkCanvas() {
       if (!stroke) return;
 
       const previous = stroke.rawPoints.at(-1);
-      const point = toPoint(event, previous);
+      const point = toPoint(event, stroke, previous);
       if (previous && Math.hypot(point.x - previous.x, point.y - previous.y) < 0.1) return;
       stroke.rawPoints.push(point);
 
       const count = stroke.rawPoints.length;
-      if (count < 3) return;
+      if (count < stroke.liveTailPoints + 2) return;
 
       if (stroke.points.length === 0) {
         stroke.points.push(stroke.rawPoints[0]);
         drawDot(prepareContext(canvas), stroke.rawPoints[0], stroke.color);
       }
 
+      const stableIndex = count - stroke.liveTailPoints - 1;
       const stablePoint = stabilizePoint(
-        stroke.rawPoints[count - 3],
-        stroke.rawPoints[count - 2],
-        stroke.rawPoints[count - 1],
+        stroke.rawPoints[stableIndex - 1],
+        stroke.rawPoints[stableIndex],
+        stroke.rawPoints[stableIndex + 1],
+        stroke.stability,
       );
       const stablePrevious = stroke.points.at(-1);
       if (stablePrevious) {
@@ -268,19 +377,22 @@ export default function InkCanvas() {
       if (!stroke || stroke.rawPoints.length === 0) return;
       const context = prepareContext(canvas);
 
-      if (stroke.points.length === 0) {
-        stroke.points = [...stroke.rawPoints];
-        drawPoints(context, stroke.points, stroke.color);
-      } else {
-        const stableTail = stroke.points.at(-1);
-        const rawTip = stroke.rawPoints.at(-1);
-        if (stableTail && rawTip && Math.hypot(rawTip.x - stableTail.x, rawTip.y - stableTail.y) >= 0.01) {
-          drawSegment(context, stableTail, rawTip, stroke.color);
-          stroke.points.push(rawTip);
-        }
+      for (let index = stroke.points.length; index < stroke.rawPoints.length; index += 1) {
+        const point = index > 0 && index < stroke.rawPoints.length - 1
+          ? stabilizePoint(
+            stroke.rawPoints[index - 1],
+            stroke.rawPoints[index],
+            stroke.rawPoints[index + 1],
+            stroke.stability,
+          )
+          : stroke.rawPoints[index];
+        const previous = stroke.points.at(-1);
+        if (previous) drawSegment(context, previous, point, stroke.color);
+        else drawDot(context, point, stroke.color);
+        stroke.points.push(point);
       }
 
-      clearCanvas(previewCanvas);
+      clearPreview();
     };
 
     const handlePointerDown = (event: PointerEvent) => {
@@ -291,6 +403,10 @@ export default function InkCanvas() {
       const stroke: Stroke = {
         color: colorRef.current,
         size: brushSizeRef.current,
+        sharpness: sharpnessRef.current,
+        pressureSensitivity: pressureSensitivityRef.current,
+        stability: stabilityRef.current,
+        liveTailPoints: 2 + Math.round(stabilityRef.current / 25),
         rawPoints: [],
         points: [],
       };
@@ -301,13 +417,24 @@ export default function InkCanvas() {
       updateCursor(event);
     };
 
-    const handlePointerMove = (event: PointerEvent) => {
-      updateCursor(event);
+    const processActiveInput = (event: PointerEvent) => {
       if (activePointerRef.current !== event.pointerId) return;
       event.preventDefault();
       const samples = event.getCoalescedEvents?.() ?? [event];
       samples.forEach(appendPoint);
       drawPreview(activeStrokeRef.current);
+    };
+
+    const supportsRawUpdate = 'onpointerrawupdate' in window;
+
+    const handlePointerMove = (event: PointerEvent) => {
+      updateCursor(event);
+      if (!supportsRawUpdate) processActiveInput(event);
+    };
+
+    const handlePointerRawUpdate = (event: PointerEvent) => {
+      updateCursor(event);
+      processActiveInput(event);
     };
 
     const finishStroke = (event: PointerEvent) => {
@@ -317,6 +444,7 @@ export default function InkCanvas() {
       activePointerRef.current = null;
       activeStrokeRef.current = null;
       if (canvas.hasPointerCapture(event.pointerId)) canvas.releasePointerCapture(event.pointerId);
+      updateCursor(event);
       setHistoryVersion((version) => version + 1);
     };
 
@@ -331,6 +459,7 @@ export default function InkCanvas() {
 
     canvas.addEventListener('pointerdown', handlePointerDown);
     canvas.addEventListener('pointermove', handlePointerMove);
+    if (supportsRawUpdate) canvas.addEventListener('pointerrawupdate', handlePointerRawUpdate);
     canvas.addEventListener('pointerup', finishStroke);
     canvas.addEventListener('pointercancel', finishStroke);
     canvas.addEventListener('pointerenter', updateCursor);
@@ -341,6 +470,7 @@ export default function InkCanvas() {
       window.removeEventListener('resize', resizeCanvases);
       canvas.removeEventListener('pointerdown', handlePointerDown);
       canvas.removeEventListener('pointermove', handlePointerMove);
+      if (supportsRawUpdate) canvas.removeEventListener('pointerrawupdate', handlePointerRawUpdate);
       canvas.removeEventListener('pointerup', finishStroke);
       canvas.removeEventListener('pointercancel', finishStroke);
       canvas.removeEventListener('pointerenter', updateCursor);
@@ -377,11 +507,72 @@ export default function InkCanvas() {
     <Paper className="ink-panel" radius="xl" withBorder>
       <div className="ink-toolbar">
         <Group gap="sm" wrap="nowrap">
-          <Tooltip label="钢笔">
-            <ActionIcon variant="light" size="lg" radius="md" aria-label="钢笔">
-              <IconPencil size={20} />
-            </ActionIcon>
-          </Tooltip>
+          <Popover width={310} position="bottom-start" shadow="md" withArrow>
+            <Popover.Target>
+              <ActionIcon variant="light" size="lg" radius="md" aria-label="钢笔设置">
+                <IconPencil size={20} />
+              </ActionIcon>
+            </Popover.Target>
+            <Popover.Dropdown className="brush-settings">
+              <Text fw={700} mb="md">钢笔参数</Text>
+              <Stack gap="lg">
+                <div>
+                  <Group justify="space-between" mb={6}>
+                    <Text size="sm">笔尖锐度</Text>
+                    <Text size="xs" c="dimmed">{sharpness}%</Text>
+                  </Group>
+                  <Slider
+                    value={sharpness}
+                    onChange={(value) => {
+                      sharpnessRef.current = value;
+                      setSharpness(value);
+                    }}
+                    min={0}
+                    max={100}
+                    step={5}
+                    label={(value) => `${value}%`}
+                    aria-label="笔尖锐度"
+                  />
+                </div>
+                <div>
+                  <Group justify="space-between" mb={6}>
+                    <Text size="sm">压力灵敏度</Text>
+                    <Text size="xs" c="dimmed">{pressureSensitivity}%</Text>
+                  </Group>
+                  <Slider
+                    value={pressureSensitivity}
+                    onChange={(value) => {
+                      pressureSensitivityRef.current = value;
+                      setPressureSensitivity(value);
+                    }}
+                    min={0}
+                    max={100}
+                    step={5}
+                    label={(value) => `${value}%`}
+                    aria-label="压力灵敏度"
+                  />
+                </div>
+                <div>
+                  <Group justify="space-between" mb={6}>
+                    <Text size="sm">画笔稳定性</Text>
+                    <Text size="xs" c="dimmed">{stability}%</Text>
+                  </Group>
+                  <Slider
+                    value={stability}
+                    onChange={(value) => {
+                      stabilityRef.current = value;
+                      setStability(value);
+                    }}
+                    min={0}
+                    max={100}
+                    step={5}
+                    label={(value) => `${value}%`}
+                    aria-label="画笔稳定性"
+                  />
+                </div>
+              </Stack>
+            </Popover.Dropdown>
+          </Popover>
           <Divider orientation="vertical" />
           <Group gap={7} wrap="nowrap">
             {COLORS.map((item) => (
