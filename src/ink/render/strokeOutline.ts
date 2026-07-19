@@ -33,64 +33,44 @@ function removeDuplicatePoints(points: readonly InkPoint[]) {
   });
 }
 
-function getNormal(points: readonly InkPoint[], index: number) {
-  const current = points[index];
-  const previous = points[Math.max(0, index - 1)];
-  const next = points[Math.min(points.length - 1, index + 1)];
-  let directionX = next.x - previous.x;
-  let directionY = next.y - previous.y;
-  let length = Math.hypot(directionX, directionY);
+function appendSegmentBody(
+  parts: string[],
+  start: InkPoint,
+  end: InkPoint,
+) {
+  const deltaX = end.x - start.x;
+  const deltaY = end.y - start.y;
+  const length = Math.hypot(deltaX, deltaY);
+  if (length < MIN_DISTANCE) return;
 
-  if (length < MIN_DISTANCE && index < points.length - 1) {
-    directionX = next.x - current.x;
-    directionY = next.y - current.y;
-    length = Math.hypot(directionX, directionY);
-  }
-  if (length < MIN_DISTANCE && index > 0) {
-    directionX = current.x - previous.x;
-    directionY = current.y - previous.y;
-    length = Math.hypot(directionX, directionY);
-  }
-  if (length < MIN_DISTANCE) return { x: 0, y: 1 };
-
-  return {
-    x: -directionY / length,
-    y: directionX / length,
+  const normalX = -deltaY / length;
+  const normalY = deltaX / length;
+  const startRadius = start.width / 2;
+  const endRadius = end.width / 2;
+  const startLeft = {
+    x: start.x + normalX * startRadius,
+    y: start.y + normalY * startRadius,
   };
-}
+  const endLeft = {
+    x: end.x + normalX * endRadius,
+    y: end.y + normalY * endRadius,
+  };
+  const endRight = {
+    x: end.x - normalX * endRadius,
+    y: end.y - normalY * endRadius,
+  };
+  const startRight = {
+    x: start.x - normalX * startRadius,
+    y: start.y - normalY * startRadius,
+  };
 
-function createSide(
-  points: readonly InkPoint[],
-  direction: 1 | -1,
-): OutlinePoint[] {
-  return points.map((point, index) => {
-    const normal = getNormal(points, index);
-    const radius = point.width / 2;
-    return {
-      x: point.x + normal.x * radius * direction,
-      y: point.y + normal.y * radius * direction,
-    };
-  });
-}
-
-function appendSmoothSide(parts: string[], points: readonly OutlinePoint[]) {
-  if (points.length < 2) return;
-  if (points.length === 2) {
-    parts.push(`L ${formatPoint(points[1])}`);
-    return;
-  }
-
-  for (let index = 1; index < points.length - 1; index += 1) {
-    const current = points[index];
-    const next = points[index + 1];
-    const midpoint = {
-      x: (current.x + next.x) / 2,
-      y: (current.y + next.y) / 2,
-    };
-    parts.push(`Q ${formatPoint(current)} ${formatPoint(midpoint)}`);
-  }
-  const end = points.at(-1);
-  if (end) parts.push(`Q ${formatPoint(end)} ${formatPoint(end)}`);
+  parts.push(
+    `M ${formatPoint(startLeft)}`,
+    `L ${formatPoint(endLeft)}`,
+    `L ${formatPoint(endRight)}`,
+    `L ${formatPoint(startRight)}`,
+    'Z',
+  );
 }
 
 export function createStrokeOutlinePath(sourcePoints: readonly InkPoint[]) {
@@ -98,22 +78,10 @@ export function createStrokeOutlinePath(sourcePoints: readonly InkPoint[]) {
   if (points.length === 0) return '';
   if (points.length === 1) return createCirclePath(points[0]);
 
-  const leftSide = createSide(points, 1);
-  const rightSide = createSide(points, -1).reverse();
-  const start = points[0];
-  const end = points.at(-1) ?? start;
-  const endRadius = formatNumber(end.width / 2);
-  const startRadius = formatNumber(start.width / 2);
-  const parts = [`M ${formatPoint(leftSide[0])}`];
-
-  appendSmoothSide(parts, leftSide);
-  parts.push(
-    `A ${endRadius} ${endRadius} 0 0 0 ${formatPoint(rightSide[0])}`,
-  );
-  appendSmoothSide(parts, rightSide);
-  parts.push(
-    `A ${startRadius} ${startRadius} 0 0 0 ${formatPoint(leftSide[0])}`,
-    'Z',
-  );
+  const parts: string[] = [];
+  for (let index = 1; index < points.length; index += 1) {
+    appendSegmentBody(parts, points[index - 1], points[index]);
+  }
+  points.forEach((point) => parts.push(createCirclePath(point)));
   return parts.join(' ');
 }

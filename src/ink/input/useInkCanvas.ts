@@ -284,6 +284,7 @@ export default function useInkCanvas(options: InkCanvasOptions) {
       const committed = finishActiveStroke();
       activePointerRef.current = null;
       activeStrokeRef.current = null;
+      if (committed) redrawCanvas();
       if (canvas.hasPointerCapture(event.pointerId)) {
         canvas.releasePointerCapture(event.pointerId);
       }

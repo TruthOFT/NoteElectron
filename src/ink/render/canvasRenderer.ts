@@ -4,6 +4,7 @@ import type {
   Stroke,
   ViewTransform,
 } from '../types';
+import { createStrokeOutlinePath } from './strokeOutline';
 
 const IDENTITY_VIEW: ViewTransform = {
   scale: 1,
@@ -115,11 +116,10 @@ export function drawPoints(
   points: InkPoint[],
   color: string,
 ) {
-  if (points.length === 0) return;
-  drawDot(context, points[0], color);
-  for (let index = 1; index < points.length; index += 1) {
-    drawSegment(context, points[index - 1], points[index], color);
-  }
+  const pathData = createStrokeOutlinePath(points);
+  if (!pathData) return;
+  context.fillStyle = color;
+  context.fill(new Path2D(pathData), 'nonzero');
 }
 
 export function drawAddedPoints(
