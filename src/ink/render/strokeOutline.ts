@@ -65,7 +65,7 @@ function densifyPoints(points: readonly InkPoint[]) {
   return result;
 }
 
-function smoothCenterline(points: readonly InkPoint[]) {
+function smoothStrokePass(points: readonly InkPoint[]) {
   if (points.length < 5) return [...points];
   return points.map((point, index) => {
     if (index < 2 || index > points.length - 3) return { ...point };
@@ -74,7 +74,24 @@ function smoothCenterline(points: readonly InkPoint[]) {
     const next = points[index + 1];
     const next2 = points[index + 2];
     const thinStrokeRatio = clamp((5 - point.width) / 4, 0, 1);
-    const blend = thinStrokeRatio * 0.85;
+    const incomingX = point.x - previous.x;
+    const incomingY = point.y - previous.y;
+    const outgoingX = next.x - point.x;
+    const outgoingY = next.y - point.y;
+    const incomingLength = Math.hypot(incomingX, incomingY);
+    const outgoingLength = Math.hypot(outgoingX, outgoingY);
+    const turn = incomingLength > MIN_DISTANCE && outgoingLength > MIN_DISTANCE
+      ? Math.acos(clamp(
+        (incomingX * outgoingX + incomingY * outgoingY)
+          / (incomingLength * outgoingLength),
+        -1,
+        1,
+      ))
+      : 0;
+    const cornerRatio = clamp((turn - 0.28) / 0.9, 0, 1);
+    const positionBlend = (0.58 + thinStrokeRatio * 0.3)
+      * (1 - cornerRatio * 0.9);
+    const widthBlend = 0.72;
     const averageX = previous2.x * 0.1
       + previous.x * 0.2
       + point.x * 0.4
@@ -85,17 +102,40 @@ function smoothCenterline(points: readonly InkPoint[]) {
       + point.y * 0.4
       + next.y * 0.2
       + next2.y * 0.1;
+    const averageWidth = previous2.width * 0.1
+      + previous.width * 0.2
+      + point.width * 0.4
+      + next.width * 0.2
+      + next2.width * 0.1;
     return {
       ...point,
-      x: point.x + (averageX - point.x) * blend,
-      y: point.y + (averageY - point.y) * blend,
+      x: point.x + (averageX - point.x) * positionBlend,
+      y: point.y + (averageY - point.y) * positionBlend,
+      width: point.width + (averageWidth - point.width) * widthBlend,
     };
   });
 }
 
+function smoothStroke(points: readonly InkPoint[]) {
+  const geometrySmoothed = smoothStrokePass(smoothStrokePass(points));
+  return geometrySmoothed.map((point, index) => {
+    if (index < 2 || index > geometrySmoothed.length - 3) return point;
+    const previous2 = geometrySmoothed[index - 2];
+    const previous = geometrySmoothed[index - 1];
+    const next = geometrySmoothed[index + 1];
+    const next2 = geometrySmoothed[index + 2];
+    const width = previous2.width * 0.1
+      + previous.width * 0.2
+      + point.width * 0.4
+      + next.width * 0.2
+      + next2.width * 0.1;
+    return { ...point, width };
+  });
+}
+
 function getNormal(points: readonly InkPoint[], index: number) {
-  const previous = points[Math.max(0, index - 1)];
-  const next = points[Math.min(points.length - 1, index + 1)];
+  const previous = points[Math.max(0, index - 2)];
+  const next = points[Math.min(points.length - 1, index + 2)];
   const directionX = next.x - previous.x;
   const directionY = next.y - previous.y;
   const length = Math.hypot(directionX, directionY);
@@ -189,7 +229,7 @@ function createSmoothRunPath(points: readonly InkPoint[]) {
 }
 
 export function createStrokeOutlinePath(sourcePoints: readonly InkPoint[]) {
-  const points = smoothCenterline(
+  const points = smoothStroke(
     densifyPoints(removeDuplicatePoints(sourcePoints)),
   );
   if (points.length === 0) return '';

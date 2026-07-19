@@ -25,42 +25,76 @@ function createInkPoint(
   const thinStrokeSmoothing = sharpnessRatio
     * sensitivityRatio
     * lowPressureRatio;
-  const previous2 = stroke.rawPoints.at(-2);
-  const sampleDistance = previous
-    ? Math.hypot(sample.x - previous.rawX, sample.y - previous.rawY)
-    : 0;
-  let turnRatio = 0;
-  if (previous && previous2) {
-    const incomingX = previous.rawX - previous2.rawX;
-    const incomingY = previous.rawY - previous2.rawY;
-    const outgoingX = sample.x - previous.rawX;
-    const outgoingY = sample.y - previous.rawY;
-    const incomingLength = Math.hypot(incomingX, incomingY);
-    const outgoingLength = Math.hypot(outgoingX, outgoingY);
-    if (incomingLength > 0 && outgoingLength > 0) {
-      const turn = Math.acos(clamp(
-        (incomingX * outgoingX + incomingY * outgoingY)
-          / (incomingLength * outgoingLength),
-        -1,
-        1,
-      ));
-      turnRatio = clamp((turn - 0.12) / (Math.PI * 0.55), 0, 1);
+  let x = sample.x;
+  let y = sample.y;
+  if (previous) {
+    const previous2 = stroke.rawPoints.at(-2);
+    const previous3 = stroke.rawPoints.at(-3);
+    const directionStart = previous3 ?? previous2 ?? previous;
+    let tangentX = previous.rawX - directionStart.rawX;
+    let tangentY = previous.rawY - directionStart.rawY;
+    let tangentLength = Math.hypot(tangentX, tangentY);
+    if (tangentLength < 0.01) {
+      tangentX = sample.x - previous.rawX;
+      tangentY = sample.y - previous.rawY;
+      tangentLength = Math.hypot(tangentX, tangentY);
+    }
+    if (tangentLength > 0.01) {
+      tangentX /= tangentLength;
+      tangentY /= tangentLength;
+      const errorX = sample.x - previous.x;
+      const errorY = sample.y - previous.y;
+      const along = errorX * tangentX + errorY * tangentY;
+      const lateralX = errorX - tangentX * along;
+      const lateralY = errorY - tangentY * along;
+      let turnConfidence = 0;
+      if (previous2 && previous3) {
+        const firstX = previous2.rawX - previous3.rawX;
+        const firstY = previous2.rawY - previous3.rawY;
+        const secondX = previous.rawX - previous2.rawX;
+        const secondY = previous.rawY - previous2.rawY;
+        const thirdX = sample.x - previous.rawX;
+        const thirdY = sample.y - previous.rawY;
+        const firstLength = Math.hypot(firstX, firstY);
+        const secondLength = Math.hypot(secondX, secondY);
+        const thirdLength = Math.hypot(thirdX, thirdY);
+        const previousCross = firstX * secondY - firstY * secondX;
+        const currentCross = secondX * thirdY - secondY * thirdX;
+        if (
+          previousCross * currentCross > 0
+          && firstLength > 0.01
+          && secondLength > 0.01
+          && thirdLength > 0.01
+        ) {
+          const previousTurn = Math.abs(previousCross)
+            / (firstLength * secondLength);
+          const currentTurn = Math.abs(currentCross)
+            / (secondLength * thirdLength);
+          turnConfidence = clamp(
+            Math.min(previousTurn, currentTurn) / 0.55,
+            0,
+            1,
+          );
+        }
+      }
+      const alongResponse = clamp(
+        0.88 + Math.min(distance, 2) * 0.04,
+        0.88,
+        0.96,
+      );
+      const lateralResponse = clamp(
+        0.5 - thinStrokeSmoothing * 0.08 + turnConfidence * 0.4,
+        0.42,
+        0.9,
+      );
+      x = previous.x
+        + tangentX * along * alongResponse
+        + lateralX * lateralResponse;
+      y = previous.y
+        + tangentY * along * alongResponse
+        + lateralY * lateralResponse;
     }
   }
-  const positionResponse = clamp(
-    0.72
-      - thinStrokeSmoothing * 0.08
-      + Math.min(sampleDistance, 2) * 0.1
-      + turnRatio * 0.24,
-    0.64,
-    0.97,
-  );
-  const x = previous
-    ? previous.x + (sample.x - previous.x) * positionResponse
-    : sample.x;
-  const y = previous
-    ? previous.y + (sample.y - previous.y) * positionResponse
-    : sample.y;
   const pressureResponse = 0.78 - thinStrokeSmoothing * 0.42;
   const pressure = previous
     ? previous.pressure * (1 - pressureResponse)
