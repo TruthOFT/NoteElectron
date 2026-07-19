@@ -25,13 +25,41 @@ function createInkPoint(
   const thinStrokeSmoothing = sharpnessRatio
     * sensitivityRatio
     * lowPressureRatio;
-  const dampingResponse = (1 - stroke.stability / 100 * 0.55)
-    * (1 - thinStrokeSmoothing * 0.42);
+  const previous2 = stroke.rawPoints.at(-2);
+  const sampleDistance = previous
+    ? Math.hypot(sample.x - previous.rawX, sample.y - previous.rawY)
+    : 0;
+  let turnRatio = 0;
+  if (previous && previous2) {
+    const incomingX = previous.rawX - previous2.rawX;
+    const incomingY = previous.rawY - previous2.rawY;
+    const outgoingX = sample.x - previous.rawX;
+    const outgoingY = sample.y - previous.rawY;
+    const incomingLength = Math.hypot(incomingX, incomingY);
+    const outgoingLength = Math.hypot(outgoingX, outgoingY);
+    if (incomingLength > 0 && outgoingLength > 0) {
+      const turn = Math.acos(clamp(
+        (incomingX * outgoingX + incomingY * outgoingY)
+          / (incomingLength * outgoingLength),
+        -1,
+        1,
+      ));
+      turnRatio = clamp((turn - 0.12) / (Math.PI * 0.55), 0, 1);
+    }
+  }
+  const positionResponse = clamp(
+    0.72
+      - thinStrokeSmoothing * 0.08
+      + Math.min(sampleDistance, 2) * 0.1
+      + turnRatio * 0.24,
+    0.64,
+    0.97,
+  );
   const x = previous
-    ? previous.x + (sample.x - previous.x) * dampingResponse
+    ? previous.x + (sample.x - previous.x) * positionResponse
     : sample.x;
   const y = previous
-    ? previous.y + (sample.y - previous.y) * dampingResponse
+    ? previous.y + (sample.y - previous.y) * positionResponse
     : sample.y;
   const pressureResponse = 0.78 - thinStrokeSmoothing * 0.42;
   const pressure = previous
