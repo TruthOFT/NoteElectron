@@ -86,8 +86,11 @@ function createInkPoint(
         0.96,
       );
       const lateralResponse = clamp(
-        0.5 - thinStrokeSmoothing * 0.08 - thinStrokeRatio * 0.25 + turnConfidence * 0.4,
-        0.12,
+        0.54
+          - thinStrokeSmoothing * 0.04
+          - thinStrokeRatio * 0.1
+          + turnConfidence * 0.36,
+        0.32,
         0.9,
       );
       x = previous.x
