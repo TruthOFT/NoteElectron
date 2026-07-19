@@ -19,21 +19,28 @@ function createInkPoint(
     ? Math.hypot(sample.x - previous.rawX, sample.y - previous.rawY)
     : 0;
   const rawVelocity = distance / deltaTime;
-  const dampingResponse = 1 - stroke.stability / 100 * 0.55;
+  const sharpnessRatio = stroke.sharpness / 100;
+  const sensitivityRatio = stroke.pressureSensitivity / 100;
+  const lowPressureRatio = clamp((0.4 - sample.pressure) / 0.34, 0, 1);
+  const thinStrokeSmoothing = sharpnessRatio
+    * sensitivityRatio
+    * lowPressureRatio;
+  const dampingResponse = (1 - stroke.stability / 100 * 0.55)
+    * (1 - thinStrokeSmoothing * 0.3);
   const x = previous
     ? previous.x + (sample.x - previous.x) * dampingResponse
     : sample.x;
   const y = previous
     ? previous.y + (sample.y - previous.y) * dampingResponse
     : sample.y;
+  const pressureResponse = 0.85 - thinStrokeSmoothing * 0.3;
   const pressure = previous
-    ? previous.pressure * 0.15 + sample.pressure * 0.85
+    ? previous.pressure * (1 - pressureResponse)
+      + sample.pressure * pressureResponse
     : sample.pressure;
   const velocity = previous
     ? previous.velocity * 0.25 + rawVelocity * 0.75
     : 0;
-  const sharpnessRatio = stroke.sharpness / 100;
-  const sensitivityRatio = stroke.pressureSensitivity / 100;
   const minimumWidthRatio = 0.42 - sharpnessRatio * 0.34;
   const pressureExponent = 0.25 + sensitivityRatio * 1.55;
   const pressureFactor = minimumWidthRatio
@@ -47,9 +54,12 @@ function createInkPoint(
     minimumWidth,
     stroke.size * pressureFactor * speedFactor,
   );
-  const widthResponse = targetWidth < (previous?.width ?? targetWidth)
+  const baseWidthResponse = targetWidth < (previous?.width ?? targetWidth)
     ? 0.68 + sensitivityRatio * 0.16
     : 0.58 - sensitivityRatio * 0.12;
+  const thinWidthRatio = clamp((3 - targetWidth) / 2.4, 0, 1);
+  const widthResponse = baseWidthResponse
+    * (1 - thinWidthRatio * highSensitivity * 0.34);
   const width = previous
     ? previous.width + (targetWidth - previous.width) * widthResponse
     : targetWidth;

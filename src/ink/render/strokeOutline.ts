@@ -6,6 +6,7 @@ type OutlinePoint = {
 };
 
 const MIN_DISTANCE = 0.05;
+const MAX_SUBDIVISIONS = 4;
 
 const formatNumber = (value: number) => String(Math.round(value * 1000) / 1000);
 
@@ -31,6 +32,37 @@ function removeDuplicatePoints(points: readonly InkPoint[]) {
     const previous = points[index - 1];
     return Math.hypot(point.x - previous.x, point.y - previous.y) >= MIN_DISTANCE;
   });
+}
+
+const clamp = (value: number, minimum: number, maximum: number) =>
+  Math.min(maximum, Math.max(minimum, value));
+
+function densifyPoints(points: readonly InkPoint[]) {
+  if (points.length < 2) return [...points];
+  const result: InkPoint[] = [{ ...points[0] }];
+
+  for (let index = 1; index < points.length; index += 1) {
+    const start = points[index - 1];
+    const end = points[index];
+    const distance = Math.hypot(end.x - start.x, end.y - start.y);
+    const maximumStep = clamp(Math.min(start.width, end.width) * 0.8, 0.7, 2);
+    const subdivisions = Math.min(
+      MAX_SUBDIVISIONS,
+      Math.max(1, Math.ceil(distance / maximumStep)),
+    );
+
+    for (let step = 1; step <= subdivisions; step += 1) {
+      const progress = step / subdivisions;
+      result.push({
+        ...end,
+        x: start.x + (end.x - start.x) * progress,
+        y: start.y + (end.y - start.y) * progress,
+        width: start.width + (end.width - start.width) * progress,
+      });
+    }
+  }
+
+  return result;
 }
 
 function appendSegmentBody(
@@ -74,7 +106,7 @@ function appendSegmentBody(
 }
 
 export function createStrokeOutlinePath(sourcePoints: readonly InkPoint[]) {
-  const points = removeDuplicatePoints(sourcePoints);
+  const points = densifyPoints(removeDuplicatePoints(sourcePoints));
   if (points.length === 0) return '';
   if (points.length === 1) return createCirclePath(points[0]);
 
