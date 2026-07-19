@@ -97,11 +97,6 @@ export default function useInkCanvas(options: InkCanvasOptions) {
     let previewDirtyRect: DirtyRect | null = null;
     let cursorPosition: { x: number; y: number } | null = null;
 
-    const redrawCanvas = () => {
-      const context = clearCanvas(canvas, viewRef.current);
-      history.all.forEach((stroke) => drawPoints(context, stroke.points, stroke.color));
-    };
-
     const updateGrid = () => {
       const stage = canvas.parentElement;
       if (!stage) return;
@@ -151,9 +146,7 @@ export default function useInkCanvas(options: InkCanvasOptions) {
       const previewChanged = resizeCanvas(previewCanvas);
       if (!baseChanged && !previewChanged) return;
       if (previewChanged) previewDirtyRect = null;
-      redrawCanvas();
       drawPreview(activeStrokeRef.current);
-      setVectorView(vectorLayer, viewRef.current);
       updateGrid();
     };
 
@@ -193,11 +186,6 @@ export default function useInkCanvas(options: InkCanvasOptions) {
       if (!stroke || stroke.rawPoints.length === 0) return false;
       finishStroke(stroke);
       clearPreview();
-      drawPoints(
-        prepareContext(canvas, viewRef.current),
-        stroke.points,
-        stroke.color,
-      );
       history.add(stroke);
       appendVectorStroke(vectorLayer, stroke, viewRef.current);
       return true;
@@ -215,7 +203,7 @@ export default function useInkCanvas(options: InkCanvasOptions) {
         sharpness: settings.sharpness,
         pressureSensitivity: settings.pressureSensitivity,
         stability: FIXED_STABILITY,
-      });
+      }, viewRef.current.scale);
       activeStrokeRef.current = stroke;
       appendPoint(event);
       drawPreview(stroke);
@@ -251,7 +239,6 @@ export default function useInkCanvas(options: InkCanvasOptions) {
       showZoomControls();
       previewDirtyRect = null;
       clearCanvas(previewCanvas, viewRef.current);
-      redrawCanvas();
       drawPreview(activeStrokeRef.current);
       setVectorView(vectorLayer, viewRef.current);
       updateGrid();
@@ -332,12 +319,9 @@ export default function useInkCanvas(options: InkCanvasOptions) {
 
   const redrawAll = () => {
     const vectorLayer = vectorLayerRef.current;
-    const canvas = canvasRef.current;
     const previewCanvas = previewCanvasRef.current;
-    if (!vectorLayer || !canvas || !previewCanvas) return;
+    if (!vectorLayer || !previewCanvas) return;
     redrawVectorStrokes(vectorLayer, history.all, viewRef.current);
-    const context = clearCanvas(canvas, viewRef.current);
-    history.all.forEach((stroke) => drawPoints(context, stroke.points, stroke.color));
     clearCanvas(previewCanvas, viewRef.current);
   };
 

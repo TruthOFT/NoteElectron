@@ -8,6 +8,7 @@ export function stabilizePoint(
   current: InkPoint,
   next: InkPoint,
   stability: number,
+  inputScale: number,
 ): InkPoint {
   const incomingX = current.x - previous.x;
   const incomingY = current.y - previous.y;
@@ -32,9 +33,10 @@ export function stabilizePoint(
     minimumWeight,
     maximumWeight,
   );
-  const thinStrokeRatio = clamp((5 - current.width) / 4.2, 0, 1);
-  const sampleSpan = Math.max(incomingLength, outgoingLength);
-  const jitterScale = Math.max(2.5, current.width * 1.25);
+  const screenWidth = current.width * inputScale;
+  const thinStrokeRatio = clamp((5 - screenWidth) / 4.2, 0, 1);
+  const sampleSpan = Math.max(incomingLength, outgoingLength) * inputScale;
+  const jitterScale = Math.max(2.5, screenWidth * 1.25);
   const shortSampleRatio = clamp(
     (jitterScale - sampleSpan) / (jitterScale * 0.75),
     0,
@@ -52,7 +54,7 @@ export function stabilizePoint(
     0.38,
     basePositionWeight + jitterBoost,
   );
-  const thinWidthRatio = clamp((3 - current.width) / 2.5, 0, 1);
+  const thinWidthRatio = clamp((3 - screenWidth) / 2.5, 0, 1);
   const widthWeight = Math.min(
     0.28,
     stabilityRatio * 0.12 + thinWidthRatio * 0.16,

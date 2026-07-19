@@ -25,6 +25,7 @@ export type BrushSettings = {
 };
 
 export type Stroke = BrushSettings & {
+  inputScale: number;
   liveTailPoints: number;
   rawPoints: InkPoint[];
   points: InkPoint[];

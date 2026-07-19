@@ -18,13 +18,16 @@ function createInkPoint(
   const distance = previous
     ? Math.hypot(sample.x - previous.rawX, sample.y - previous.rawY)
     : 0;
-  const rawVelocity = distance / deltaTime;
+  const screenDistance = distance * stroke.inputScale;
+  const rawVelocity = screenDistance / deltaTime;
   const sharpnessRatio = stroke.sharpness / 100;
   const sensitivityRatio = stroke.pressureSensitivity / 100;
   const lowPressureRatio = clamp((0.5 - sample.pressure) / 0.44, 0, 1);
   const thinStrokeSmoothing = sharpnessRatio
     * sensitivityRatio
     * lowPressureRatio;
+  const referenceWidth = previous?.width ?? stroke.size;
+  const thinStrokeRatio = clamp((5 - referenceWidth) / 4, 0, 1);
   let x = sample.x;
   let y = sample.y;
   if (previous) {
@@ -78,13 +81,13 @@ function createInkPoint(
         }
       }
       const alongResponse = clamp(
-        0.88 + Math.min(distance, 2) * 0.04,
+        0.88 + Math.min(screenDistance, 2) * 0.04,
         0.88,
         0.96,
       );
       const lateralResponse = clamp(
-        0.5 - thinStrokeSmoothing * 0.08 + turnConfidence * 0.4,
-        0.42,
+        0.5 - thinStrokeSmoothing * 0.08 - thinStrokeRatio * 0.25 + turnConfidence * 0.4,
+        0.12,
         0.9,
       );
       x = previous.x
@@ -104,7 +107,8 @@ function createInkPoint(
     ? previous.velocity * 0.25 + rawVelocity * 0.75
     : 0;
   const minimumWidthRatio = 0.42 - sharpnessRatio * 0.4;
-  const pressureExponent = 0.25 + sensitivityRatio * 1.55;
+  const pressureExponent = (0.2 + sensitivityRatio * 0.9)
+    * (1 - thinStrokeRatio * 0.4);
   const pressureFactor = minimumWidthRatio
     + (1 - minimumWidthRatio) * Math.pow(pressure, pressureExponent);
   const speedStrength = 0.03 + sharpnessRatio * 0.27;
@@ -121,16 +125,18 @@ function createInkPoint(
     : 0.58 - sensitivityRatio * 0.12;
   const thinWidthRatio = clamp((3 - targetWidth) / 2.4, 0, 1);
   const widthResponse = baseWidthResponse
-    * (1 - thinWidthRatio * highSensitivity * 0.34);
+    * (1 - thinWidthRatio * 0.3);
   const respondedWidth = previous
     ? previous.width + (targetWidth - previous.width) * widthResponse
     : targetWidth;
   const thinResultRatio = previous
     ? clamp((3 - Math.min(previous.width, respondedWidth)) / 2.6, 0, 1)
     : 0;
-  const maximumWidthChange = 0.04
-    + Math.min(distance, 2) * 0.12
-    + (1 - thinResultRatio) * 0.3;
+  const maximumWidthChange = (
+    0.04
+    + Math.min(screenDistance, 2) * 0.12
+    + (1 - thinResultRatio) * 0.3
+  ) * (1 - thinResultRatio * 0.5);
   const width = previous
     ? previous.width + clamp(
       respondedWidth - previous.width,
@@ -151,9 +157,13 @@ function createInkPoint(
   };
 }
 
-export function createStroke(settings: BrushSettings): Stroke {
+export function createStroke(
+  settings: BrushSettings,
+  inputScale = 1,
+): Stroke {
   return {
     ...settings,
+    inputScale: Math.max(0.01, inputScale),
     liveTailPoints: 2 + Math.round(settings.stability / 25),
     rawPoints: [],
     points: [],
@@ -163,7 +173,11 @@ export function createStroke(settings: BrushSettings): Stroke {
 export function appendSample(stroke: Stroke, sample: PointerSample): InkPoint[] {
   const previous = stroke.rawPoints.at(-1);
   const point = createInkPoint(sample, stroke, previous);
-  if (previous && Math.hypot(point.x - previous.x, point.y - previous.y) < 0.1) {
+  if (
+    previous
+    && Math.hypot(point.x - previous.x, point.y - previous.y)
+      * stroke.inputScale < 0.1
+  ) {
     return [];
   }
   stroke.rawPoints.push(point);
@@ -183,6 +197,7 @@ export function appendSample(stroke: Stroke, sample: PointerSample): InkPoint[] 
     stroke.rawPoints[stableIndex],
     stroke.rawPoints[stableIndex + 1],
     stroke.stability,
+    stroke.inputScale,
   );
   stroke.points.push(stablePoint);
   return [stablePoint];
