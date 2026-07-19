@@ -32,6 +32,7 @@ export default function InkCanvas() {
     canZoomOut,
     zoomIn,
     zoomOut,
+    exportPdf,
     undo,
     clear,
   } = useInkCanvas({ color, brushSize, sharpness, pressureSensitivity });
@@ -51,6 +52,7 @@ export default function InkCanvas() {
         onBrushPresetSizeChange={updateBrushPresetSize}
         onSharpnessChange={setSharpness}
         onPressureSensitivityChange={setPressureSensitivity}
+        onExport={exportPdf}
         onUndo={undo}
         onClear={clear}
       />

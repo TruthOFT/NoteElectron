@@ -17,6 +17,7 @@ import {
 } from '@mantine/core';
 import {
   IconArrowBackUp,
+  IconFileTypePdf,
   IconGripVertical,
   IconPencil,
   IconTrash,
@@ -35,6 +36,7 @@ type FloatingInkToolbarProps = {
   onBrushPresetSizeChange: (index: number, value: number) => void;
   onSharpnessChange: (value: number) => void;
   onPressureSensitivityChange: (value: number) => void;
+  onExport: () => Promise<void>;
   onUndo: () => void;
   onClear: () => void;
 };
@@ -59,6 +61,7 @@ export default function FloatingInkToolbar({
   onBrushPresetSizeChange,
   onSharpnessChange,
   onPressureSensitivityChange,
+  onExport,
   onUndo,
   onClear,
 }: FloatingInkToolbarProps) {
@@ -261,6 +264,18 @@ export default function FloatingInkToolbar({
 
       <Divider orientation="vertical" />
       <Group gap={4} wrap="nowrap">
+        <Tooltip label="导出 PDF">
+          <ActionIcon
+            variant="subtle"
+            color="gray"
+            size="lg"
+            onClick={onExport}
+            disabled={!canUndo}
+            aria-label="导出 PDF"
+          >
+            <IconFileTypePdf size={20} />
+          </ActionIcon>
+        </Tooltip>
         <Tooltip label="撤销">
           <ActionIcon
             variant="subtle"

@@ -157,14 +157,14 @@ export default function useInkCanvas(options: InkCanvasOptions) {
     const updateCursor = (event: PointerEvent) => {
       const bounds = canvas.getBoundingClientRect();
       const { brushSize, color } = optionsRef.current;
-      const size = Math.max(1.5, brushSize * viewRef.current.scale * 0.78);
+      const size = Math.max(1.5, brushSize * viewRef.current.scale * 0.5);
       const x = event.clientX - bounds.left;
       const y = event.clientY - bounds.top;
       cursor.style.width = `${size}px`;
       cursor.style.height = `${size}px`;
       cursor.style.backgroundColor = color;
       cursor.style.transform = `translate3d(${x - size / 2}px, ${y - size / 2}px, 0)`;
-      cursor.dataset.visible = activePointerRef.current === null ? 'true' : 'false';
+      cursor.dataset.visible = 'true';
     };
 
     const appendPoint = (event: PointerEvent) => {
@@ -356,6 +356,26 @@ export default function useInkCanvas(options: InkCanvasOptions) {
   const zoomIn = () => zoomAtRef.current(viewRef.current.scale + ZOOM_STEP);
   const zoomOut = () => zoomAtRef.current(viewRef.current.scale - ZOOM_STEP);
 
+  const exportPdf = async () => {
+    const vectorLayer = vectorLayerRef.current;
+    if (!vectorLayer || history.isEmpty) return;
+    const bounds = vectorLayer.getBoundingClientRect();
+    const width = Math.max(1, Math.round(bounds.width));
+    const height = Math.max(1, Math.round(bounds.height));
+    const exportSvg = vectorLayer.cloneNode(true) as SVGSVGElement;
+    exportSvg.removeAttribute('class');
+    exportSvg.setAttribute('xmlns', 'http://www.w3.org/2000/svg');
+    exportSvg.setAttribute('width', String(width));
+    exportSvg.setAttribute('height', String(height));
+    exportSvg.setAttribute('viewBox', `0 0 ${width} ${height}`);
+
+    await window.noteElectron.exportPdf({
+      svg: exportSvg.outerHTML,
+      width,
+      height,
+    });
+  };
+
   return {
     vectorLayerRef,
     canvasRef,
@@ -368,6 +388,7 @@ export default function useInkCanvas(options: InkCanvasOptions) {
     canZoomOut: zoom > MIN_ZOOM,
     zoomIn,
     zoomOut,
+    exportPdf,
     undo,
     clear,
   };

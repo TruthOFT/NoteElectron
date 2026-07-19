@@ -1,11 +1,42 @@
-import { app, BrowserWindow } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain } from 'electron';
+import { writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import started from 'electron-squirrel-startup';
+import { renderVectorPdf } from './export/pdfDocument';
+import {
+  PDF_EXPORT_CHANNEL,
+  type PdfExportRequest,
+  type PdfExportResult,
+} from './export/pdfIpc';
 
 // Handle creating/removing shortcuts on Windows when installing/uninstalling.
 if (started) {
   app.quit();
 }
+
+ipcMain.handle(
+  PDF_EXPORT_CHANNEL,
+  async (event, request: PdfExportRequest): Promise<PdfExportResult> => {
+    if (!request.svg.startsWith('<svg')) {
+      throw new Error('PDF export requires SVG content.');
+    }
+
+    const owner = BrowserWindow.fromWebContents(event.sender);
+    const options = {
+      title: '导出 PDF',
+      defaultPath: `笔记-${new Date().toISOString().slice(0, 10)}.pdf`,
+      filters: [{ name: 'PDF 文件', extensions: ['pdf'] }],
+    };
+    const result = owner
+      ? await dialog.showSaveDialog(owner, options)
+      : await dialog.showSaveDialog(options);
+    if (result.canceled || !result.filePath) return { canceled: true };
+
+    const pdf = await renderVectorPdf(request);
+    await writeFile(result.filePath, pdf);
+    return { canceled: false, filePath: result.filePath };
+  },
+);
 
 const createWindow = () => {
   const mainWindow = new BrowserWindow({
