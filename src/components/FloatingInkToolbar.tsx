@@ -1,4 +1,5 @@
 import {
+  useEffect,
   useLayoutEffect,
   useRef,
   useState,
@@ -18,6 +19,7 @@ import {
 import {
   IconArrowBackUp,
   IconFileTypePdf,
+  IconGripHorizontal,
   IconGripVertical,
   IconPencil,
   IconTrash,
@@ -46,7 +48,10 @@ type ToolbarPosition = {
   y: number;
 };
 
+type ToolbarDock = 'top' | 'right' | 'bottom' | 'left' | null;
+
 const EDGE_GAP = 12;
+const SNAP_DISTANCE = 72;
 
 export default function FloatingInkToolbar({
   colors,
@@ -71,7 +76,25 @@ export default function FloatingInkToolbar({
     offsetX: number;
     offsetY: number;
   } | null>(null);
+  const [dock, setDock] = useState<ToolbarDock>('top');
+  const [isDragging, setIsDragging] = useState(false);
   const [position, setPosition] = useState<ToolbarPosition>({ x: EDGE_GAP, y: 16 });
+  const isVertical = dock === 'left' || dock === 'right';
+  const dividerOrientation = isVertical ? 'horizontal' : 'vertical';
+  const settingsPopoverPosition = dock === 'right'
+    ? 'left-start'
+    : dock === 'left'
+      ? 'right-start'
+      : dock === 'bottom'
+        ? 'top-start'
+        : 'bottom-start';
+  const presetPopoverPosition = dock === 'right'
+    ? 'left'
+    : dock === 'left'
+      ? 'right'
+      : dock === 'bottom'
+        ? 'top'
+        : 'bottom';
 
   const constrainPosition = (next: ToolbarPosition): ToolbarPosition => {
     const toolbar = toolbarRef.current;
@@ -84,26 +107,66 @@ export default function FloatingInkToolbar({
     };
   };
 
-  useLayoutEffect(() => {
-    const centerToolbar = () => {
-      const toolbar = toolbarRef.current;
-      if (!toolbar) return;
-      setPosition((current) => constrainPosition({
+  const getDockPosition = (nextDock: Exclude<ToolbarDock, null>): ToolbarPosition => {
+    const toolbar = toolbarRef.current;
+    if (!toolbar) return { x: EDGE_GAP, y: EDGE_GAP };
+
+    switch (nextDock) {
+      case 'top':
+        return constrainPosition({
           x: (window.innerWidth - toolbar.offsetWidth) / 2,
-          y: current.y,
-      }));
+          y: EDGE_GAP,
+        });
+      case 'right':
+        return constrainPosition({
+          x: window.innerWidth - toolbar.offsetWidth - EDGE_GAP,
+          y: (window.innerHeight - toolbar.offsetHeight) / 2,
+        });
+      case 'bottom':
+        return constrainPosition({
+          x: (window.innerWidth - toolbar.offsetWidth) / 2,
+          y: window.innerHeight - toolbar.offsetHeight - EDGE_GAP,
+        });
+      case 'left':
+        return constrainPosition({
+          x: EDGE_GAP,
+          y: (window.innerHeight - toolbar.offsetHeight) / 2,
+        });
+    }
+  };
+
+  const findDock = (next: ToolbarPosition): ToolbarDock => {
+    const toolbar = toolbarRef.current;
+    if (!toolbar) return null;
+    const distances: Array<[Exclude<ToolbarDock, null>, number]> = [
+      ['top', next.y],
+      ['right', window.innerWidth - next.x - toolbar.offsetWidth],
+      ['bottom', window.innerHeight - next.y - toolbar.offsetHeight],
+      ['left', next.x],
+    ];
+    const closest = distances.reduce((best, candidate) => (
+      candidate[1] < best[1] ? candidate : best
+    ));
+    return closest[1] <= SNAP_DISTANCE ? closest[0] : null;
+  };
+
+  useLayoutEffect(() => {
+    const updateToolbarPosition = () => {
+      setPosition((current) => (
+        dock ? getDockPosition(dock) : constrainPosition(current)
+      ));
     };
 
-    const observer = new ResizeObserver(centerToolbar);
+    const observer = new ResizeObserver(updateToolbarPosition);
     const toolbar = toolbarRef.current;
     if (toolbar) observer.observe(toolbar);
-    centerToolbar();
-    window.addEventListener('resize', centerToolbar);
+    updateToolbarPosition();
+    window.addEventListener('resize', updateToolbarPosition);
     return () => {
       observer.disconnect();
-      window.removeEventListener('resize', centerToolbar);
+      window.removeEventListener('resize', updateToolbarPosition);
     };
-  }, []);
+  }, [dock]);
 
   const startDrag = (event: ReactPointerEvent<HTMLButtonElement>) => {
     const toolbar = toolbarRef.current;
@@ -114,11 +177,11 @@ export default function FloatingInkToolbar({
       offsetX: event.clientX - bounds.left,
       offsetY: event.clientY - bounds.top,
     };
-    event.currentTarget.setPointerCapture(event.pointerId);
+    setIsDragging(true);
     event.preventDefault();
   };
 
-  const moveToolbar = (event: ReactPointerEvent<HTMLButtonElement>) => {
+  const moveToolbar = (event: PointerEvent) => {
     const drag = dragRef.current;
     if (!drag || drag.pointerId !== event.pointerId) return;
     setPosition(constrainPosition({
@@ -127,18 +190,39 @@ export default function FloatingInkToolbar({
     }));
   };
 
-  const finishDrag = (event: ReactPointerEvent<HTMLButtonElement>) => {
-    if (dragRef.current?.pointerId !== event.pointerId) return;
+  const finishDrag = (event: PointerEvent) => {
+    const drag = dragRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    const nextPosition = constrainPosition({
+      x: event.clientX - drag.offsetX,
+      y: event.clientY - drag.offsetY,
+    });
+    const nextDock = findDock(nextPosition);
     dragRef.current = null;
-    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
-      event.currentTarget.releasePointerCapture(event.pointerId);
-    }
+    setIsDragging(false);
+    setDock(nextDock);
+    setPosition(nextDock ? getDockPosition(nextDock) : nextPosition);
   };
+
+  useEffect(() => {
+    if (!isDragging) return undefined;
+    window.addEventListener('pointermove', moveToolbar);
+    window.addEventListener('pointerup', finishDrag);
+    window.addEventListener('pointercancel', finishDrag);
+    return () => {
+      window.removeEventListener('pointermove', moveToolbar);
+      window.removeEventListener('pointerup', finishDrag);
+      window.removeEventListener('pointercancel', finishDrag);
+    };
+  }, [isDragging]);
 
   return (
     <div
       ref={toolbarRef}
       className="ink-toolbar"
+      data-dock={dock ?? 'floating'}
+      data-dragging={isDragging ? 'true' : 'false'}
+      data-orientation={isVertical ? 'vertical' : 'horizontal'}
       style={{ transform: `translate3d(${position.x}px, ${position.y}px, 0)` }}
     >
       <Tooltip label="拖动工具条">
@@ -149,15 +233,14 @@ export default function FloatingInkToolbar({
           size="lg"
           aria-label="拖动工具条"
           onPointerDown={startDrag}
-          onPointerMove={moveToolbar}
-          onPointerUp={finishDrag}
-          onPointerCancel={finishDrag}
         >
-          <IconGripVertical size={20} />
+          {isVertical
+            ? <IconGripHorizontal size={20} />
+            : <IconGripVertical size={20} />}
         </ActionIcon>
       </Tooltip>
 
-      <Popover width={310} position="bottom-start" shadow="md" withArrow>
+      <Popover width={310} position={settingsPopoverPosition} shadow="md" withArrow>
         <Popover.Target>
           <ActionIcon variant="light" size="lg" radius="md" aria-label="钢笔设置">
             <IconPencil size={20} />
@@ -200,8 +283,8 @@ export default function FloatingInkToolbar({
         </Popover.Dropdown>
       </Popover>
 
-      <Divider orientation="vertical" />
-      <Group gap={7} wrap="nowrap">
+      <Divider orientation={dividerOrientation} />
+      <Group className="toolbar-section" gap={7} wrap="nowrap">
         {colors.map((item) => (
           <ColorSwatch
             className="ink-color"
@@ -215,13 +298,13 @@ export default function FloatingInkToolbar({
         ))}
       </Group>
 
-      <Divider orientation="vertical" />
-      <Group className="brush-presets" gap={5} wrap="nowrap">
+      <Divider orientation={dividerOrientation} />
+      <Group className="toolbar-section brush-presets" gap={5} wrap="nowrap">
         {brushPresets.map((size, index) => (
           <Popover
             key={index}
             width={260}
-            position="bottom"
+            position={presetPopoverPosition}
             shadow="md"
             withArrow
           >
@@ -262,8 +345,8 @@ export default function FloatingInkToolbar({
         ))}
       </Group>
 
-      <Divider orientation="vertical" />
-      <Group gap={4} wrap="nowrap">
+      <Divider orientation={dividerOrientation} />
+      <Group className="toolbar-section" gap={4} wrap="nowrap">
         <Tooltip label="导出 PDF">
           <ActionIcon
             variant="subtle"

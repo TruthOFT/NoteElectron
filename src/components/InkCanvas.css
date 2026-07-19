@@ -35,6 +35,29 @@
   will-change: transform;
 }
 
+.ink-toolbar[data-dragging='false'] {
+  transition: transform 180ms cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+.ink-toolbar[data-orientation='vertical'] {
+  width: 56px;
+  height: auto;
+  flex-direction: column;
+  padding: 6px 7px 10px;
+}
+
+.ink-toolbar[data-orientation='vertical'] .mantine-Divider-root {
+  width: 100%;
+}
+
+.ink-toolbar[data-orientation='vertical'] .toolbar-section {
+  flex-direction: column;
+}
+
+.ink-toolbar[data-orientation='vertical'] .brush-presets {
+  height: auto;
+}
+
 .toolbar-drag-handle {
   cursor: grab;
   touch-action: none;
