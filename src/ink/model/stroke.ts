@@ -41,7 +41,7 @@ function createInkPoint(
   const velocity = previous
     ? previous.velocity * 0.25 + rawVelocity * 0.75
     : 0;
-  const minimumWidthRatio = 0.42 - sharpnessRatio * 0.34;
+  const minimumWidthRatio = 0.42 - sharpnessRatio * 0.4;
   const pressureExponent = 0.25 + sensitivityRatio * 1.55;
   const pressureFactor = minimumWidthRatio
     + (1 - minimumWidthRatio) * Math.pow(pressure, pressureExponent);

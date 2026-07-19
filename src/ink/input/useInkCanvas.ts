@@ -95,6 +95,7 @@ export default function useInkCanvas(options: InkCanvasOptions) {
     const cursor = cursorRef.current;
     if (!vectorLayer || !canvas || !previewCanvas || !cursor) return undefined;
     let previewDirtyRect: DirtyRect | null = null;
+    let cursorPosition: { x: number; y: number } | null = null;
 
     const redrawCanvas = () => {
       const context = clearCanvas(canvas, viewRef.current);
@@ -156,17 +157,26 @@ export default function useInkCanvas(options: InkCanvasOptions) {
       updateGrid();
     };
 
-    const updateCursor = (event: PointerEvent) => {
-      const bounds = canvas.getBoundingClientRect();
+    const renderCursor = () => {
+      if (!cursorPosition) return;
       const { brushSize, color } = optionsRef.current;
       const size = Math.max(1.5, brushSize * viewRef.current.scale * 0.5);
-      const x = event.clientX - bounds.left;
-      const y = event.clientY - bounds.top;
       cursor.style.width = `${size}px`;
       cursor.style.height = `${size}px`;
       cursor.style.backgroundColor = color;
-      cursor.style.transform = `translate3d(${x - size / 2}px, ${y - size / 2}px, 0)`;
+      const x = cursorPosition.x - size / 2;
+      const y = cursorPosition.y - size / 2;
+      cursor.style.transform = `translate3d(${x}px, ${y}px, 0)`;
       cursor.dataset.visible = 'true';
+    };
+
+    const updateCursor = (event: PointerEvent) => {
+      const bounds = canvas.getBoundingClientRect();
+      cursorPosition = {
+        x: event.clientX - bounds.left,
+        y: event.clientY - bounds.top,
+      };
+      renderCursor();
     };
 
     const appendPoint = (event: PointerEvent) => {
@@ -236,6 +246,7 @@ export default function useInkCanvas(options: InkCanvasOptions) {
         offsetX: screenX - worldX * nextScale,
         offsetY: screenY - worldY * nextScale,
       };
+      renderCursor();
       setZoom(nextScale);
       showZoomControls();
       previewDirtyRect = null;
@@ -281,7 +292,9 @@ export default function useInkCanvas(options: InkCanvasOptions) {
     };
 
     const hideCursor = () => {
-      if (activePointerRef.current === null) cursor.dataset.visible = 'false';
+      if (activePointerRef.current !== null) return;
+      cursorPosition = null;
+      cursor.dataset.visible = 'false';
     };
 
     const observer = new ResizeObserver(resizeCanvases);
