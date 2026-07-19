@@ -4,7 +4,7 @@ import type {
   PointerSample,
   Stroke,
 } from '../types';
-import { stabilizePoint, stabilizeStrokeStart } from './smoothing';
+import { stabilizePoint } from './smoothing';
 
 const clamp = (value: number, min: number, max: number) =>
   Math.min(max, Math.max(min, value));
@@ -41,8 +41,15 @@ function createInkPoint(
   const speedStrength = 0.03 + sharpnessRatio * 0.27;
   const speedFloor = 0.85 - sharpnessRatio * 0.6;
   const speedFactor = clamp(1.06 - velocity * speedStrength, speedFloor, 1);
-  const targetWidth = Math.max(0.8, stroke.size * pressureFactor * speedFactor);
-  const widthResponse = previous && targetWidth < previous.width ? 0.52 : 0.84;
+  const highSensitivity = clamp((sensitivityRatio - 0.55) / 0.45, 0, 1);
+  const minimumWidth = 0.8 - highSensitivity * sharpnessRatio * 0.6;
+  const targetWidth = Math.max(
+    minimumWidth,
+    stroke.size * pressureFactor * speedFactor,
+  );
+  const widthResponse = targetWidth < (previous?.width ?? targetWidth)
+    ? 0.68 + sensitivityRatio * 0.16
+    : 0.58 - sensitivityRatio * 0.12;
   const width = previous
     ? previous.width + (targetWidth - previous.width) * widthResponse
     : targetWidth;
@@ -80,9 +87,9 @@ export function appendSample(stroke: Stroke, sample: PointerSample): InkPoint[] 
   if (count < stroke.liveTailPoints + 2) return [];
 
   if (stroke.points.length === 0) {
-    const stableStart = stabilizeStrokeStart(stroke.rawPoints, stroke.stability);
-    stroke.points.push(stableStart);
-    return [stableStart];
+    const stableStart = stroke.rawPoints.slice(0, 2).map((item) => ({ ...item }));
+    stroke.points.push(...stableStart);
+    return stableStart;
   }
 
   const stableIndex = count - stroke.liveTailPoints - 1;
@@ -97,7 +104,13 @@ export function appendSample(stroke: Stroke, sample: PointerSample): InkPoint[] 
 }
 
 export function finishStroke(stroke: Stroke): InkPoint[] {
-  const addedPoints = stroke.rawPoints.slice(stroke.points.length);
+  const tailStart = stroke.points.length === 0
+    ? 0
+    : Math.max(0, stroke.rawPoints.length - stroke.liveTailPoints);
+  const addedPoints = stroke.rawPoints
+    .slice(tailStart)
+    .map((point) => ({ ...point }));
+
   stroke.points.push(...addedPoints);
   return addedPoints;
 }

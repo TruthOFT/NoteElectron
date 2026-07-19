@@ -131,9 +131,13 @@ export default function useInkCanvas(options: InkCanvasOptions) {
       const stableTail = stroke.points.at(-1);
       const context = prepareContext(previewCanvas, viewRef.current);
       if (stableTail) {
+        const tailStart = Math.max(
+          0,
+          stroke.rawPoints.length - stroke.liveTailPoints,
+        );
         const tailPoints = [
           stableTail,
-          ...stroke.rawPoints.slice(stroke.points.length),
+          ...stroke.rawPoints.slice(tailStart),
         ];
         drawPoints(context, tailPoints, stroke.color);
         previewDirtyRect = getDirtyRect(tailPoints);

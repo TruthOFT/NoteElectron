@@ -83,34 +83,6 @@ export function resizeCanvas(canvas: HTMLCanvasElement) {
   return true;
 }
 
-function drawDot(context: CanvasRenderingContext2D, point: InkPoint, color: string) {
-  context.beginPath();
-  context.arc(point.x, point.y, point.width / 2, 0, Math.PI * 2);
-  context.fillStyle = color;
-  context.fill();
-}
-
-function drawSegment(
-  context: CanvasRenderingContext2D,
-  start: InkPoint,
-  end: InkPoint,
-  color: string,
-) {
-  if (Math.hypot(end.x - start.x, end.y - start.y) < 0.01) {
-    drawDot(context, end, color);
-    return;
-  }
-
-  context.beginPath();
-  context.moveTo(start.x, start.y);
-  context.lineTo(end.x, end.y);
-  context.strokeStyle = color;
-  context.lineWidth = (start.width + end.width) / 2;
-  context.lineCap = 'round';
-  context.lineJoin = 'round';
-  context.stroke();
-}
-
 export function drawPoints(
   context: CanvasRenderingContext2D,
   points: InkPoint[],
@@ -128,12 +100,7 @@ export function drawAddedPoints(
   points: InkPoint[],
   color: string,
 ) {
-  let lastPoint = previous;
-  points.forEach((point) => {
-    if (lastPoint) drawSegment(context, lastPoint, point, color);
-    else drawDot(context, point, color);
-    lastPoint = point;
-  });
+  drawPoints(context, previous ? [previous, ...points] : points, color);
 }
 
 export function redrawStrokes(
