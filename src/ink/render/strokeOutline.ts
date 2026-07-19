@@ -65,55 +65,140 @@ function densifyPoints(points: readonly InkPoint[]) {
   return result;
 }
 
-function appendSegmentBody(
-  parts: string[],
-  start: InkPoint,
-  end: InkPoint,
-) {
-  const deltaX = end.x - start.x;
-  const deltaY = end.y - start.y;
-  const length = Math.hypot(deltaX, deltaY);
-  if (length < MIN_DISTANCE) return;
+function smoothCenterline(points: readonly InkPoint[]) {
+  if (points.length < 5) return [...points];
+  return points.map((point, index) => {
+    if (index < 2 || index > points.length - 3) return { ...point };
+    const previous2 = points[index - 2];
+    const previous = points[index - 1];
+    const next = points[index + 1];
+    const next2 = points[index + 2];
+    const thinStrokeRatio = clamp((5 - point.width) / 4, 0, 1);
+    const blend = thinStrokeRatio * 0.85;
+    const averageX = previous2.x * 0.1
+      + previous.x * 0.2
+      + point.x * 0.4
+      + next.x * 0.2
+      + next2.x * 0.1;
+    const averageY = previous2.y * 0.1
+      + previous.y * 0.2
+      + point.y * 0.4
+      + next.y * 0.2
+      + next2.y * 0.1;
+    return {
+      ...point,
+      x: point.x + (averageX - point.x) * blend,
+      y: point.y + (averageY - point.y) * blend,
+    };
+  });
+}
 
-  const normalX = -deltaY / length;
-  const normalY = deltaX / length;
-  const startRadius = start.width / 2;
-  const endRadius = end.width / 2;
-  const startLeft = {
-    x: start.x + normalX * startRadius,
-    y: start.y + normalY * startRadius,
+function getNormal(points: readonly InkPoint[], index: number) {
+  const previous = points[Math.max(0, index - 1)];
+  const next = points[Math.min(points.length - 1, index + 1)];
+  const directionX = next.x - previous.x;
+  const directionY = next.y - previous.y;
+  const length = Math.hypot(directionX, directionY);
+  if (length < MIN_DISTANCE) return { x: 0, y: 1 };
+  return {
+    x: -directionY / length,
+    y: directionX / length,
   };
-  const endLeft = {
-    x: end.x + normalX * endRadius,
-    y: end.y + normalY * endRadius,
-  };
-  const endRight = {
-    x: end.x - normalX * endRadius,
-    y: end.y - normalY * endRadius,
-  };
-  const startRight = {
-    x: start.x - normalX * startRadius,
-    y: start.y - normalY * startRadius,
-  };
+}
 
+function createSide(points: readonly InkPoint[], direction: 1 | -1) {
+  return points.map((point, index) => {
+    const normal = getNormal(points, index);
+    const radius = point.width / 2;
+    return {
+      x: point.x + normal.x * radius * direction,
+      y: point.y + normal.y * radius * direction,
+    };
+  });
+}
+
+function appendSmoothSide(parts: string[], points: readonly OutlinePoint[]) {
+  if (points.length < 2) return;
+  if (points.length === 2) {
+    parts.push(`L ${formatPoint(points[1])}`);
+    return;
+  }
+
+  for (let index = 1; index < points.length - 1; index += 1) {
+    const current = points[index];
+    const next = points[index + 1];
+    parts.push(`Q ${formatPoint(current)} ${formatPoint({
+      x: (current.x + next.x) / 2,
+      y: (current.y + next.y) / 2,
+    })}`);
+  }
+  const end = points.at(-1);
+  if (end) parts.push(`Q ${formatPoint(end)} ${formatPoint(end)}`);
+}
+
+function getTurn(points: readonly InkPoint[], index: number) {
+  const previous = points[index - 1];
+  const current = points[index];
+  const next = points[index + 1];
+  const incomingX = current.x - previous.x;
+  const incomingY = current.y - previous.y;
+  const outgoingX = next.x - current.x;
+  const outgoingY = next.y - current.y;
+  const incomingLength = Math.hypot(incomingX, incomingY);
+  const outgoingLength = Math.hypot(outgoingX, outgoingY);
+  if (incomingLength < MIN_DISTANCE || outgoingLength < MIN_DISTANCE) return 0;
+  return Math.acos(clamp(
+    (incomingX * outgoingX + incomingY * outgoingY)
+      / (incomingLength * outgoingLength),
+    -1,
+    1,
+  ));
+}
+
+function splitSmoothRuns(points: readonly InkPoint[]) {
+  const runs: InkPoint[][] = [];
+  let start = 0;
+  for (let index = 1; index < points.length - 1; index += 1) {
+    if (getTurn(points, index) < Math.PI * 0.32) continue;
+    runs.push(points.slice(start, index + 1));
+    start = index;
+  }
+  runs.push(points.slice(start));
+  return runs.filter((run) => run.length >= 2);
+}
+
+function createSmoothRunPath(points: readonly InkPoint[]) {
+  const leftSide = createSide(points, 1);
+  const rightSide = createSide(points, -1).reverse();
+  const start = points[0];
+  const end = points.at(-1) ?? start;
+  const parts = [`M ${formatPoint(leftSide[0])}`];
+
+  appendSmoothSide(parts, leftSide);
   parts.push(
-    `M ${formatPoint(startLeft)}`,
-    `L ${formatPoint(endLeft)}`,
-    `L ${formatPoint(endRight)}`,
-    `L ${formatPoint(startRight)}`,
+    `A ${formatNumber(end.width / 2)} ${formatNumber(end.width / 2)}`
+      + ` 0 0 0 ${formatPoint(rightSide[0])}`,
+  );
+  appendSmoothSide(parts, rightSide);
+  parts.push(
+    `A ${formatNumber(start.width / 2)} ${formatNumber(start.width / 2)}`
+      + ` 0 0 0 ${formatPoint(leftSide[0])}`,
     'Z',
   );
+  return parts.join(' ');
 }
 
 export function createStrokeOutlinePath(sourcePoints: readonly InkPoint[]) {
-  const points = densifyPoints(removeDuplicatePoints(sourcePoints));
+  const points = smoothCenterline(
+    densifyPoints(removeDuplicatePoints(sourcePoints)),
+  );
   if (points.length === 0) return '';
   if (points.length === 1) return createCirclePath(points[0]);
 
-  const parts: string[] = [];
-  for (let index = 1; index < points.length; index += 1) {
-    appendSegmentBody(parts, points[index - 1], points[index]);
+  const runs = splitSmoothRuns(points);
+  const parts = runs.map(createSmoothRunPath);
+  for (let index = 1; index < runs.length; index += 1) {
+    parts.push(createCirclePath(runs[index][0]));
   }
-  points.forEach((point) => parts.push(createCirclePath(point)));
   return parts.join(' ');
 }

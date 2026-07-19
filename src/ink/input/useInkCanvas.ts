@@ -3,7 +3,6 @@ import StrokeHistory from '../history/StrokeHistory';
 import { appendSample, createStroke, finishStroke } from '../model/stroke';
 import {
   clearCanvas,
-  drawAddedPoints,
   drawPoints,
   getDirtyRect,
   prepareContext,
@@ -16,6 +15,7 @@ import {
 } from '../render/svgRenderer';
 import type {
   DirtyRect,
+  InkPoint,
   PointerSample,
   Stroke,
   ViewTransform,
@@ -43,7 +43,7 @@ function samplePointer(
   view: ViewTransform,
 ): PointerSample {
   const bounds = canvas.getBoundingClientRect();
-  const fallbackPressure = event.pointerType === 'mouse' ? 0.5 : 0.12;
+  const fallbackPressure = event.pointerType === 'mouse' ? 0.5 : 0;
   const pressure = Math.min(
     1,
     Math.max(0, event.pressure > 0 ? event.pressure : fallbackPressure),
@@ -99,8 +99,6 @@ export default function useInkCanvas(options: InkCanvasOptions) {
     const redrawCanvas = () => {
       const context = clearCanvas(canvas, viewRef.current);
       history.all.forEach((stroke) => drawPoints(context, stroke.points, stroke.color));
-      const stroke = activeStrokeRef.current;
-      if (stroke) drawPoints(context, stroke.points, stroke.color);
     };
 
     const updateGrid = () => {
@@ -130,21 +128,21 @@ export default function useInkCanvas(options: InkCanvasOptions) {
 
       const stableTail = stroke.points.at(-1);
       const context = prepareContext(previewCanvas, viewRef.current);
+      let previewPoints: InkPoint[];
       if (stableTail) {
         const tailStart = Math.max(
           0,
           stroke.rawPoints.length - stroke.liveTailPoints,
         );
-        const tailPoints = [
-          stableTail,
+        previewPoints = [
+          ...stroke.points,
           ...stroke.rawPoints.slice(tailStart),
         ];
-        drawPoints(context, tailPoints, stroke.color);
-        previewDirtyRect = getDirtyRect(tailPoints);
       } else {
-        drawPoints(context, stroke.rawPoints, stroke.color);
-        previewDirtyRect = getDirtyRect(stroke.rawPoints);
+        previewPoints = stroke.rawPoints;
       }
+      drawPoints(context, previewPoints, stroke.color);
+      previewDirtyRect = getDirtyRect(previewPoints);
     };
 
     const resizeCanvases = () => {
@@ -174,34 +172,22 @@ export default function useInkCanvas(options: InkCanvasOptions) {
     const appendPoint = (event: PointerEvent) => {
       const stroke = activeStrokeRef.current;
       if (!stroke) return;
-      const previous = stroke.points.at(-1);
-      const addedPoints = appendSample(
+      appendSample(
         stroke,
         samplePointer(event, canvas, viewRef.current),
-      );
-      if (addedPoints.length === 0) return;
-      drawAddedPoints(
-        prepareContext(canvas, viewRef.current),
-        previous,
-        addedPoints,
-        stroke.color,
       );
     };
 
     const finishActiveStroke = () => {
       const stroke = activeStrokeRef.current;
       if (!stroke || stroke.rawPoints.length === 0) return false;
-      const previous = stroke.points.at(-1);
-      const addedPoints = finishStroke(stroke);
-      if (addedPoints.length > 0) {
-        drawAddedPoints(
-          prepareContext(canvas, viewRef.current),
-          previous,
-          addedPoints,
-          stroke.color,
-        );
-      }
+      finishStroke(stroke);
       clearPreview();
+      drawPoints(
+        prepareContext(canvas, viewRef.current),
+        stroke.points,
+        stroke.color,
+      );
       history.add(stroke);
       appendVectorStroke(vectorLayer, stroke, viewRef.current);
       return true;

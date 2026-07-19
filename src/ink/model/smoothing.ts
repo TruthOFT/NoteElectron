@@ -27,12 +27,36 @@ export function stabilizePoint(
   const stabilityRatio = stability / 100;
   const maximumWeight = 0.04 + stabilityRatio * 0.24;
   const minimumWeight = 0.01 + stabilityRatio * 0.025;
-  const positionWeight = clamp(
+  const basePositionWeight = clamp(
     maximumWeight * (1 - turn / (Math.PI * 0.72)),
     minimumWeight,
     maximumWeight,
   );
-  const widthWeight = Math.min(stabilityRatio * 0.12, positionWeight);
+  const thinStrokeRatio = clamp((5 - current.width) / 4.2, 0, 1);
+  const sampleSpan = Math.max(incomingLength, outgoingLength);
+  const jitterScale = Math.max(2.5, current.width * 1.25);
+  const shortSampleRatio = clamp(
+    (jitterScale - sampleSpan) / (jitterScale * 0.75),
+    0,
+    1,
+  );
+  const sharpJitterRatio = clamp(
+    (turn - 0.28) / (Math.PI - 0.28),
+    0,
+    1,
+  );
+  const jitterBoost = thinStrokeRatio
+    * shortSampleRatio
+    * (0.08 + sharpJitterRatio * 0.22);
+  const positionWeight = Math.min(
+    0.38,
+    basePositionWeight + jitterBoost,
+  );
+  const thinWidthRatio = clamp((3 - current.width) / 2.5, 0, 1);
+  const widthWeight = Math.min(
+    0.28,
+    stabilityRatio * 0.12 + thinWidthRatio * 0.16,
+  );
 
   return {
     x: previous.x * positionWeight

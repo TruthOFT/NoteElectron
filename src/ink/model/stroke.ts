@@ -21,19 +21,19 @@ function createInkPoint(
   const rawVelocity = distance / deltaTime;
   const sharpnessRatio = stroke.sharpness / 100;
   const sensitivityRatio = stroke.pressureSensitivity / 100;
-  const lowPressureRatio = clamp((0.4 - sample.pressure) / 0.34, 0, 1);
+  const lowPressureRatio = clamp((0.5 - sample.pressure) / 0.44, 0, 1);
   const thinStrokeSmoothing = sharpnessRatio
     * sensitivityRatio
     * lowPressureRatio;
   const dampingResponse = (1 - stroke.stability / 100 * 0.55)
-    * (1 - thinStrokeSmoothing * 0.3);
+    * (1 - thinStrokeSmoothing * 0.42);
   const x = previous
     ? previous.x + (sample.x - previous.x) * dampingResponse
     : sample.x;
   const y = previous
     ? previous.y + (sample.y - previous.y) * dampingResponse
     : sample.y;
-  const pressureResponse = 0.85 - thinStrokeSmoothing * 0.3;
+  const pressureResponse = 0.78 - thinStrokeSmoothing * 0.42;
   const pressure = previous
     ? previous.pressure * (1 - pressureResponse)
       + sample.pressure * pressureResponse
@@ -60,9 +60,22 @@ function createInkPoint(
   const thinWidthRatio = clamp((3 - targetWidth) / 2.4, 0, 1);
   const widthResponse = baseWidthResponse
     * (1 - thinWidthRatio * highSensitivity * 0.34);
-  const width = previous
+  const respondedWidth = previous
     ? previous.width + (targetWidth - previous.width) * widthResponse
     : targetWidth;
+  const thinResultRatio = previous
+    ? clamp((3 - Math.min(previous.width, respondedWidth)) / 2.6, 0, 1)
+    : 0;
+  const maximumWidthChange = 0.04
+    + Math.min(distance, 2) * 0.12
+    + (1 - thinResultRatio) * 0.3;
+  const width = previous
+    ? previous.width + clamp(
+      respondedWidth - previous.width,
+      -maximumWidthChange,
+      maximumWidthChange,
+    )
+    : respondedWidth;
 
   return {
     x,

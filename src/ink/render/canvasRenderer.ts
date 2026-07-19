@@ -94,15 +94,6 @@ export function drawPoints(
   context.fill(new Path2D(pathData), 'nonzero');
 }
 
-export function drawAddedPoints(
-  context: CanvasRenderingContext2D,
-  previous: InkPoint | undefined,
-  points: InkPoint[],
-  color: string,
-) {
-  drawPoints(context, previous ? [previous, ...points] : points, color);
-}
-
 export function redrawStrokes(
   canvas: HTMLCanvasElement,
   strokes: readonly Stroke[],
