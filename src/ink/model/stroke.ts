@@ -9,6 +9,76 @@ import { stabilizePoint } from './smoothing';
 const clamp = (value: number, min: number, max: number) =>
   Math.min(max, Math.max(min, value));
 
+const TURN_WINDOW_DISTANCE = 16;
+const MAX_TURN_WIDTH_BOOST = 0.35;
+
+const smoothstep = (start: number, end: number, value: number) => {
+  const progress = clamp((value - start) / (end - start), 0, 1);
+  return progress * progress * (3 - 2 * progress);
+};
+
+function getTurnScore(sample: PointerSample, stroke: Stroke) {
+  if (stroke.rawPoints.length < 2) return 0;
+
+  let cursorX = sample.x;
+  let cursorY = sample.y;
+  let newerDirection: { x: number; y: number } | null = null;
+  let pathLength = 0;
+  let signedTurn = 0;
+  let absoluteTurn = 0;
+  let earliestTime = sample.time;
+
+  for (
+    let index = stroke.rawPoints.length - 1;
+    index >= 0 && pathLength < TURN_WINDOW_DISTANCE;
+    index -= 1
+  ) {
+    const point = stroke.rawPoints[index];
+    const deltaX = (cursorX - point.rawX) * stroke.inputScale;
+    const deltaY = (cursorY - point.rawY) * stroke.inputScale;
+    const segmentLength = Math.hypot(deltaX, deltaY);
+    cursorX = point.rawX;
+    cursorY = point.rawY;
+    earliestTime = point.time;
+    if (segmentLength < 0.1) continue;
+
+    const directionX = deltaX / segmentLength;
+    const directionY = deltaY / segmentLength;
+    if (newerDirection) {
+      const cross = directionX * newerDirection.y
+        - directionY * newerDirection.x;
+      const dot = directionX * newerDirection.x
+        + directionY * newerDirection.y;
+      const turn = clamp(
+        Math.atan2(cross, dot),
+        -Math.PI / 2,
+        Math.PI / 2,
+      );
+      signedTurn += turn;
+      absoluteTurn += Math.abs(turn);
+    }
+    newerDirection = { x: directionX, y: directionY };
+    pathLength += segmentLength;
+  }
+
+  if (pathLength < 2 || absoluteTurn < 0.01) return 0;
+
+  const cumulativeTurn = Math.abs(signedTurn);
+  const consistency = cumulativeTurn / absoluteTurn;
+  const consistencyScore = smoothstep(0.55, 0.9, consistency);
+  const curvature = cumulativeTurn / pathLength;
+  const duration = Math.max(1, sample.time - earliestTime);
+  const angularSpeed = cumulativeTurn / duration;
+  const angleScore = smoothstep(0.08, 0.5, cumulativeTurn);
+  const curvatureScore = smoothstep(0.006, 0.05, curvature);
+  const angularSpeedScore = smoothstep(0.001, 0.015, angularSpeed);
+
+  return angleScore
+    * (0.35 + curvatureScore * 0.65)
+    * (0.75 + angularSpeedScore * 0.25)
+    * consistencyScore;
+}
+
 function createInkPoint(
   sample: PointerSample,
   stroke: Stroke,
@@ -109,19 +179,23 @@ function createInkPoint(
   const velocity = previous
     ? previous.velocity * 0.25 + rawVelocity * 0.75
     : 0;
-  const minimumWidthRatio = 0.42 - sharpnessRatio * 0.4;
+  const minimumWidthRatio = 0.42 - sharpnessRatio * 0.28;
   const pressureExponent = (0.2 + sensitivityRatio * 0.9)
     * (1 - thinStrokeRatio * 0.4);
   const pressureFactor = minimumWidthRatio
     + (1 - minimumWidthRatio) * Math.pow(pressure, pressureExponent);
-  const speedStrength = 0.03 + sharpnessRatio * 0.27;
-  const speedFloor = 0.85 - sharpnessRatio * 0.6;
+  const speedStrength = 0.03 + sharpnessRatio * 0.21;
+  const speedFloor = 0.85 - sharpnessRatio * 0.46;
   const speedFactor = clamp(1.06 - velocity * speedStrength, speedFloor, 1);
+  const turnFactor = 1
+    + getTurnScore(sample, stroke)
+      * sharpnessRatio
+      * MAX_TURN_WIDTH_BOOST;
   const highSensitivity = clamp((sensitivityRatio - 0.55) / 0.45, 0, 1);
-  const minimumWidth = 0.8 - highSensitivity * sharpnessRatio * 0.6;
+  const minimumWidth = 0.8 - highSensitivity * sharpnessRatio * 0.4;
   const targetWidth = Math.max(
     minimumWidth,
-    stroke.size * pressureFactor * speedFactor,
+    stroke.size * pressureFactor * speedFactor * turnFactor,
   );
   const baseWidthResponse = targetWidth < (previous?.width ?? targetWidth)
     ? 0.68 + sensitivityRatio * 0.16
