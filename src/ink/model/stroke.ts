@@ -11,6 +11,10 @@ const clamp = (value: number, min: number, max: number) =>
 
 const TURN_WINDOW_DISTANCE = 16;
 const MAX_TURN_WIDTH_BOOST = 0.35;
+const TURN_RISE_DISTANCE = 3;
+const TURN_FALL_DISTANCE = 6;
+
+const smoothedTurnScores = new WeakMap<Stroke, number>();
 
 const smoothstep = (start: number, end: number, value: number) => {
   const progress = clamp((value - start) / (end - start), 0, 1);
@@ -77,6 +81,22 @@ function getTurnScore(sample: PointerSample, stroke: Stroke) {
     * (0.35 + curvatureScore * 0.65)
     * (0.75 + angularSpeedScore * 0.25)
     * consistencyScore;
+}
+
+function getSmoothedTurnScore(
+  sample: PointerSample,
+  stroke: Stroke,
+  screenDistance: number,
+) {
+  const target = getTurnScore(sample, stroke);
+  const previous = smoothedTurnScores.get(stroke) ?? 0;
+  const responseDistance = target > previous
+    ? TURN_RISE_DISTANCE
+    : TURN_FALL_DISTANCE;
+  const response = 1 - Math.exp(
+    -Math.max(0, screenDistance) / responseDistance,
+  );
+  return previous + (target - previous) * response;
 }
 
 function createInkPoint(
@@ -187,8 +207,9 @@ function createInkPoint(
   const speedStrength = 0.03 + sharpnessRatio * 0.21;
   const speedFloor = 0.85 - sharpnessRatio * 0.46;
   const speedFactor = clamp(1.06 - velocity * speedStrength, speedFloor, 1);
+  const turnScore = getSmoothedTurnScore(sample, stroke, screenDistance);
   const turnFactor = 1
-    + getTurnScore(sample, stroke)
+    + turnScore
       * sharpnessRatio
       * MAX_TURN_WIDTH_BOOST;
   const highSensitivity = clamp((sensitivityRatio - 0.55) / 0.45, 0, 1);
@@ -238,17 +259,23 @@ export function createStroke(
   settings: BrushSettings,
   inputScale = 1,
 ): Stroke {
-  return {
+  const stroke: Stroke = {
     ...settings,
     inputScale: Math.max(0.01, inputScale),
     liveTailPoints: 2 + Math.round(settings.stability / 25),
     rawPoints: [],
     points: [],
   };
+  smoothedTurnScores.set(stroke, 0);
+  return stroke;
 }
 
 export function appendSample(stroke: Stroke, sample: PointerSample): InkPoint[] {
   const previous = stroke.rawPoints.at(-1);
+  const screenDistance = previous
+    ? Math.hypot(sample.x - previous.rawX, sample.y - previous.rawY)
+      * stroke.inputScale
+    : 0;
   const point = createInkPoint(sample, stroke, previous);
   if (
     previous
@@ -257,6 +284,10 @@ export function appendSample(stroke: Stroke, sample: PointerSample): InkPoint[] 
   ) {
     return [];
   }
+  smoothedTurnScores.set(
+    stroke,
+    getSmoothedTurnScore(sample, stroke, screenDistance),
+  );
   stroke.rawPoints.push(point);
 
   const count = stroke.rawPoints.length;
