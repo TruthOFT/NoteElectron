@@ -13,6 +13,9 @@ const TURN_WINDOW_DISTANCE = 16;
 const MAX_TURN_WIDTH_BOOST = 0.35;
 const TURN_RISE_DISTANCE = 3;
 const TURN_FALL_DISTANCE = 6;
+const TANGENT_WINDOW_DISTANCE = 6;
+const MINIMUM_SAMPLE_DISTANCE = 0.35;
+const LIVE_TAIL_POINTS = 2;
 
 const smoothedTurnScores = new WeakMap<Stroke, number>();
 
@@ -20,6 +23,33 @@ const smoothstep = (start: number, end: number, value: number) => {
   const progress = clamp((value - start) / (end - start), 0, 1);
   return progress * progress * (3 - 2 * progress);
 };
+
+function getStableTangent(
+  sample: PointerSample,
+  stroke: Stroke,
+  previous: InkPoint,
+) {
+  let anchor = previous;
+  for (let index = stroke.rawPoints.length - 2; index >= 0; index -= 1) {
+    anchor = stroke.rawPoints[index];
+    const span = Math.hypot(
+      previous.x - anchor.x,
+      previous.y - anchor.y,
+    ) * stroke.inputScale;
+    if (span >= TANGENT_WINDOW_DISTANCE) break;
+  }
+
+  let x = previous.x - anchor.x;
+  let y = previous.y - anchor.y;
+  let length = Math.hypot(x, y);
+  if (length * stroke.inputScale < MINIMUM_SAMPLE_DISTANCE) {
+    x = sample.x - previous.rawX;
+    y = sample.y - previous.rawY;
+    length = Math.hypot(x, y);
+  }
+  if (length < 0.01) return null;
+  return { x: x / length, y: y / length };
+}
 
 function getTurnScore(sample: PointerSample, stroke: Stroke) {
   if (stroke.rawPoints.length < 2) return 0;
@@ -117,29 +147,26 @@ function createInkPoint(
     * sensitivityRatio
     * lowPressureRatio;
   const referenceWidth = previous?.width ?? stroke.size;
-  const thinStrokeRatio = clamp((5 - referenceWidth) / 4, 0, 1);
+  // 用屏幕像素宽判断「细笔」，1x / 放大写手感一致
+  const screenReferenceWidth = referenceWidth * stroke.inputScale;
+  const thinStrokeRatio = clamp((5 - screenReferenceWidth) / 4, 0, 1);
   let x = sample.x;
   let y = sample.y;
   if (previous) {
     const previous2 = stroke.rawPoints.at(-2);
     const previous3 = stroke.rawPoints.at(-3);
-    const directionStart = previous3 ?? previous2 ?? previous;
-    let tangentX = previous.rawX - directionStart.rawX;
-    let tangentY = previous.rawY - directionStart.rawY;
-    let tangentLength = Math.hypot(tangentX, tangentY);
-    if (tangentLength < 0.01) {
-      tangentX = sample.x - previous.rawX;
-      tangentY = sample.y - previous.rawY;
-      tangentLength = Math.hypot(tangentX, tangentY);
-    }
-    if (tangentLength > 0.01) {
-      tangentX /= tangentLength;
-      tangentY /= tangentLength;
+    const tangent = getStableTangent(sample, stroke, previous);
+    if (tangent) {
+      const tangentX = tangent.x;
+      const tangentY = tangent.y;
       const errorX = sample.x - previous.x;
       const errorY = sample.y - previous.y;
       const along = errorX * tangentX + errorY * tangentY;
       const lateralX = errorX - tangentX * along;
       const lateralY = errorY - tangentY * along;
+      const lateralScreen = Math.hypot(lateralX, lateralY) * stroke.inputScale;
+      // 小横向位移≈手抖/采样噪声；真转弯横向更大，保留
+      const lateralJitterRatio = clamp(1 - lateralScreen / 1.8, 0, 1);
       let turnConfidence = 0;
       if (previous2 && previous3) {
         const firstX = previous2.rawX - previous3.rawX;
@@ -176,11 +203,12 @@ function createInkPoint(
         0.96,
       );
       const lateralResponse = clamp(
-        0.54
+        0.5
           - thinStrokeSmoothing * 0.04
-          - thinStrokeRatio * 0.1
-          + turnConfidence * 0.36,
-        0.32,
+          - thinStrokeRatio * 0.12
+          - lateralJitterRatio * (0.28 + thinStrokeRatio * 0.12)
+          + turnConfidence * 0.4,
+        0.12,
         0.9,
       );
       x = previous.x
@@ -213,7 +241,10 @@ function createInkPoint(
       * sharpnessRatio
       * MAX_TURN_WIDTH_BOOST;
   const highSensitivity = clamp((sensitivityRatio - 0.55) / 0.45, 0, 1);
-  const minimumWidth = 0.8 - highSensitivity * sharpnessRatio * 0.4;
+  // 最小线宽按屏幕像素，避免 1x 细笔高低起伏
+  const minimumWidth = (
+    0.8 - highSensitivity * sharpnessRatio * 0.4
+  ) / stroke.inputScale;
   const targetWidth = Math.max(
     minimumWidth,
     stroke.size * pressureFactor * speedFactor * turnFactor,
@@ -221,20 +252,28 @@ function createInkPoint(
   const baseWidthResponse = targetWidth < (previous?.width ?? targetWidth)
     ? 0.68 + sensitivityRatio * 0.16
     : 0.58 - sensitivityRatio * 0.12;
-  const thinWidthRatio = clamp((3 - targetWidth) / 2.4, 0, 1);
+  const screenTargetWidth = targetWidth * stroke.inputScale;
+  const thinWidthRatio = clamp((3 - screenTargetWidth) / 2.4, 0, 1);
   const widthResponse = baseWidthResponse
-    * (1 - thinWidthRatio * 0.3);
+    * (1 - thinWidthRatio * 0.35);
   const respondedWidth = previous
     ? previous.width + (targetWidth - previous.width) * widthResponse
     : targetWidth;
+  const screenPrevWidth = (previous?.width ?? respondedWidth) * stroke.inputScale;
   const thinResultRatio = previous
-    ? clamp((3 - Math.min(previous.width, respondedWidth)) / 2.6, 0, 1)
+    ? clamp(
+      (3 - Math.min(screenPrevWidth, respondedWidth * stroke.inputScale)) / 2.6,
+      0,
+      1,
+    )
     : 0;
-  const maximumWidthChange = (
-    0.04
-    + Math.min(screenDistance, 2) * 0.12
-    + (1 - thinResultRatio) * 0.3
-  ) * (1 - thinResultRatio * 0.5);
+  // 线宽变化上限按屏幕像素，再换回世界坐标
+  const maximumScreenWidthChange = (
+    0.05
+    + Math.min(screenDistance, 2) * 0.1
+    + (1 - thinResultRatio) * 0.22
+  ) * (1 - thinResultRatio * 0.55);
+  const maximumWidthChange = maximumScreenWidthChange / stroke.inputScale;
   const width = previous
     ? previous.width + clamp(
       respondedWidth - previous.width,
@@ -262,7 +301,7 @@ export function createStroke(
   const stroke: Stroke = {
     ...settings,
     inputScale: Math.max(0.01, inputScale),
-    liveTailPoints: 2 + Math.round(settings.stability / 25),
+    liveTailPoints: LIVE_TAIL_POINTS,
     rawPoints: [],
     points: [],
   };
@@ -280,7 +319,7 @@ export function appendSample(stroke: Stroke, sample: PointerSample): InkPoint[] 
   if (
     previous
     && Math.hypot(point.x - previous.x, point.y - previous.y)
-      * stroke.inputScale < 0.1
+      * stroke.inputScale < MINIMUM_SAMPLE_DISTANCE
   ) {
     return [];
   }
