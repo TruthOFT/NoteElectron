@@ -14,8 +14,8 @@ const MAX_TURN_WIDTH_BOOST = 0.35;
 const TURN_RISE_DISTANCE = 3;
 const TURN_FALL_DISTANCE = 6;
 const TANGENT_WINDOW_DISTANCE = 6;
-const MINIMUM_SAMPLE_DISTANCE = 0.35;
-const LIVE_TAIL_POINTS = 2;
+const MINIMUM_SAMPLE_DISTANCE = 0.4;
+const LIVE_TAIL_POINTS = 1;
 
 const smoothedTurnScores = new WeakMap<Stroke, number>();
 
