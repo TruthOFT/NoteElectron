@@ -35,9 +35,8 @@ export function stabilizePoint(
     maximumWeight,
   );
   const screenWidth = current.width * inputScale;
-  const thinStrokeRatio = clamp((5 - screenWidth) / 4.2, 0, 1);
   const sampleSpan = Math.max(incomingLength, outgoingLength) * inputScale;
-  // 短步长 + 细笔 → 高频采样噪声，加强三点平滑
+  // 短步长才加防抖；中心线稳定不跟线宽走（避免尖锐→变细→更抹圆）
   const jitterScale = Math.max(2.8, screenWidth * 1.4);
   const shortSampleRatio = clamp(
     (jitterScale - sampleSpan) / (jitterScale * 0.7),
@@ -50,13 +49,13 @@ export function stabilizePoint(
     1,
   );
   const jitterBoost = shortSampleRatio * (
-    0.06
-    + thinStrokeRatio * (0.1 + sharpJitterRatio * 0.18)
+    0.04 + sharpJitterRatio * 0.06
   );
   const positionWeight = Math.min(
-    0.45,
+    0.38,
     basePositionWeight + jitterBoost,
   );
+  // 宽度平滑仍可看细笔；位置与线宽解耦
   const thinWidthRatio = clamp((3 - screenWidth) / 2.5, 0, 1);
   const widthWeight = Math.min(
     0.36,

@@ -73,7 +73,6 @@ function smoothStrokePass(points: readonly InkPoint[]) {
     const previous = points[index - 1];
     const next = points[index + 1];
     const next2 = points[index + 2];
-    const thinStrokeRatio = clamp((5 - point.width) / 4, 0, 1);
     const incomingX = point.x - previous.x;
     const incomingY = point.y - previous.y;
     const outgoingX = next.x - point.x;
@@ -89,8 +88,8 @@ function smoothStrokePass(points: readonly InkPoint[]) {
       ))
       : 0;
     const cornerRatio = clamp((turn - 0.28) / 0.9, 0, 1);
-    const positionBlend = (0.58 + thinStrokeRatio * 0.3)
-      * (1 - cornerRatio * 0.9);
+    // 中心线平滑不跟线宽走；尖锐度只影响粗细动态
+    const positionBlend = 0.58 * (1 - cornerRatio * 0.9);
     const widthBlend = 0.72;
     const averageX = previous2.x * 0.1
       + previous.x * 0.2

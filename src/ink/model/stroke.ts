@@ -9,6 +9,9 @@ import { stabilizePoint } from './smoothing';
 const clamp = (value: number, min: number, max: number) =>
   Math.min(max, Math.max(min, value));
 
+const lerp = (start: number, end: number, amount: number) =>
+  start + (end - start) * amount;
+
 const TURN_WINDOW_DISTANCE = 16;
 const MAX_TURN_WIDTH_BOOST = 0.35;
 const TURN_RISE_DISTANCE = 3;
@@ -121,21 +124,51 @@ function createInkPoint(
     ? previous.pressure * (1 - pressureResponse)
       + sample.pressure * pressureResponse
     : sample.pressure;
+  // 长笔画滤波保持；短笔画靠启动速度基准，不在这里再加硬
   const velocity = previous
-    ? previous.velocity * 0.25 + rawVelocity * 0.75
+    ? previous.velocity * 0.6 + rawVelocity * 0.4
     : 0;
   const normalizedPressure = clamp((pressure - 0.03) / 0.92, 0, 1);
   const pressureFloor = 0.18 + (1 - sensitivityRatio) * 0.12;
   const pressureFactor = pressureFloor
     + (1 - pressureFloor) * normalizedPressure;
-  const speedStrength = 0.03 + sharpnessRatio * 0.21;
-  const speedFloor = 0.85 - sharpnessRatio * 0.46;
-  const speedFactor = clamp(1.06 - velocity * speedStrength, speedFloor, 1);
-  const turnScore = getSmoothedTurnScore(sample, stroke, screenDistance);
-  const turnFactor = 1
-    + turnScore
-      * sharpnessRatio
-      * MAX_TURN_WIDTH_BOOST;
+  const speedStrength = 0.03 + sharpnessRatio * 0.1;
+  const speedFloor = 0.78 - sharpnessRatio * 0.22;
+  const currentSpeedFactor = clamp(
+    1.02 - velocity * speedStrength,
+    speedFloor,
+    1,
+  );
+
+  // 前 7～12 屏像素共用稳定启动速度，再平滑切到正常速度动态
+  const screenBaseWidth = stroke.size * stroke.inputScale;
+  const startupDistance = clamp(screenBaseWidth * 1.5, 7, 12);
+  if (previous) {
+    if (stroke.startupSpeedFactor === null) {
+      stroke.startupSpeedFactor = currentSpeedFactor;
+    } else if (stroke.screenLength < startupDistance) {
+      stroke.startupSpeedFactor += (
+        currentSpeedFactor - stroke.startupSpeedFactor
+      ) * 0.25;
+    }
+  }
+  const startupT = smoothstep(
+    startupDistance * 0.45,
+    startupDistance,
+    stroke.screenLength,
+  );
+  const speedFactor = stroke.startupSpeedFactor === null
+    ? currentSpeedFactor
+    : lerp(stroke.startupSpeedFactor, currentSpeedFactor, startupT);
+
+  // 不足 3 个位置点时无可靠转向，不做转弯增粗
+  const turnScore = stroke.rawPoints.length < 2
+    ? 0
+    : getSmoothedTurnScore(sample, stroke, screenDistance);
+  const turnFactor = stroke.rawPoints.length < 2
+    ? 1
+    : 1 + turnScore * sharpnessRatio * MAX_TURN_WIDTH_BOOST;
+
   const highSensitivity = clamp((sensitivityRatio - 0.55) / 0.45, 0, 1);
   // 最小线宽按屏幕像素，避免 1x 细笔高低起伏
   const minimumWidth = (
@@ -145,6 +178,15 @@ function createInkPoint(
     minimumWidth,
     stroke.size * pressureFactor * speedFactor * turnFactor,
   );
+
+  // 首点 velocity=0 偏粗；第一段有效速度算出后回填
+  if (previous && stroke.rawPoints.length === 1) {
+    stroke.rawPoints[0].width = targetWidth;
+    if (stroke.points.length === 1) {
+      stroke.points[0].width = targetWidth;
+    }
+  }
+
   const baseWidthResponse = targetWidth < (previous?.width ?? targetWidth)
     ? 0.68 + sensitivityRatio * 0.16
     : 0.58 - sensitivityRatio * 0.12;
@@ -198,6 +240,8 @@ export function createStroke(
     ...settings,
     inputScale: Math.max(0.01, inputScale),
     liveTailPoints: LIVE_TAIL_POINTS,
+    screenLength: 0,
+    startupSpeedFactor: null,
     rawPoints: [],
     points: [],
   };
@@ -213,6 +257,8 @@ export function appendSample(stroke: Stroke, sample: PointerSample): InkPoint[] 
     : 0;
   if (previous && screenDistance < MINIMUM_SAMPLE_DISTANCE) return [];
 
+  // 先累计弧长再建点，启动区用到当前段
+  stroke.screenLength += screenDistance;
   const point = createInkPoint(sample, stroke, previous);
   smoothedTurnScores.set(
     stroke,

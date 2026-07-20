@@ -27,6 +27,10 @@ export type BrushSettings = {
 export type Stroke = BrushSettings & {
   inputScale: number;
   liveTailPoints: number;
+  /** 当前笔画已走过的屏幕弧长（px），用于启动速度区 */
+  screenLength: number;
+  /** 起笔 7～12px 内共用的速度系数基准；无有效速度时为 null */
+  startupSpeedFactor: number | null;
   rawPoints: InkPoint[];
   points: InkPoint[];
 };
