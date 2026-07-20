@@ -54,12 +54,12 @@ export function stabilizePoint(
     + thinStrokeRatio * (0.1 + sharpJitterRatio * 0.18)
   );
   const positionWeight = Math.min(
-    0.42,
+    0.45,
     basePositionWeight + jitterBoost,
   );
   const thinWidthRatio = clamp((3 - screenWidth) / 2.5, 0, 1);
   const widthWeight = Math.min(
-    0.32,
+    0.36,
     stabilityRatio * 0.12
       + thinWidthRatio * 0.18
       + shortSampleRatio * 0.06,

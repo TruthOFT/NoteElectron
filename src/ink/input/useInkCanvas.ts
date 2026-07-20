@@ -95,6 +95,7 @@ export default function useInkCanvas(options: InkCanvasOptions) {
     const cursor = cursorRef.current;
     if (!vectorLayer || !canvas || !previewCanvas || !cursor) return undefined;
     let previewDirtyRect: DirtyRect | null = null;
+    let previewFrame: number | null = null;
     let cursorPosition: { x: number; y: number } | null = null;
 
     const updateGrid = () => {
@@ -141,6 +142,14 @@ export default function useInkCanvas(options: InkCanvasOptions) {
       previewDirtyRect = getDirtyRect(previewPoints);
     };
 
+    const schedulePreview = () => {
+      if (previewFrame !== null) return;
+      previewFrame = window.requestAnimationFrame(() => {
+        previewFrame = null;
+        drawPreview(activeStrokeRef.current);
+      });
+    };
+
     const resizeCanvases = () => {
       const baseChanged = resizeCanvas(canvas);
       const previewChanged = resizeCanvas(previewCanvas);
@@ -184,6 +193,10 @@ export default function useInkCanvas(options: InkCanvasOptions) {
     const finishActiveStroke = () => {
       const stroke = activeStrokeRef.current;
       if (!stroke || stroke.rawPoints.length === 0) return false;
+      if (previewFrame !== null) {
+        window.cancelAnimationFrame(previewFrame);
+        previewFrame = null;
+      }
       finishStroke(stroke);
       clearPreview();
       history.add(stroke);
@@ -213,9 +226,10 @@ export default function useInkCanvas(options: InkCanvasOptions) {
     const processActiveInput = (event: PointerEvent) => {
       if (activePointerRef.current !== event.pointerId) return;
       event.preventDefault();
-      const samples = event.getCoalescedEvents?.() ?? [event];
+      const coalesced = event.getCoalescedEvents?.() ?? [];
+      const samples = coalesced.length > 0 ? coalesced : [event];
       samples.forEach(appendPoint);
-      drawPreview(activeStrokeRef.current);
+      schedulePreview();
     };
 
     const supportsRawUpdate = 'onpointerrawupdate' in window;
@@ -302,6 +316,7 @@ export default function useInkCanvas(options: InkCanvasOptions) {
 
     return () => {
       observer.disconnect();
+      if (previewFrame !== null) window.cancelAnimationFrame(previewFrame);
       window.removeEventListener('resize', resizeCanvases);
       canvas.removeEventListener('pointerdown', handlePointerDown);
       canvas.removeEventListener('wheel', handleWheel);

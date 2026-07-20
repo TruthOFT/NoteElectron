@@ -13,8 +13,7 @@ const TURN_WINDOW_DISTANCE = 16;
 const MAX_TURN_WIDTH_BOOST = 0.35;
 const TURN_RISE_DISTANCE = 3;
 const TURN_FALL_DISTANCE = 6;
-const TANGENT_WINDOW_DISTANCE = 6;
-const MINIMUM_SAMPLE_DISTANCE = 0.4;
+const MINIMUM_SAMPLE_DISTANCE = 0.5;
 const LIVE_TAIL_POINTS = 1;
 
 const smoothedTurnScores = new WeakMap<Stroke, number>();
@@ -23,33 +22,6 @@ const smoothstep = (start: number, end: number, value: number) => {
   const progress = clamp((value - start) / (end - start), 0, 1);
   return progress * progress * (3 - 2 * progress);
 };
-
-function getStableTangent(
-  sample: PointerSample,
-  stroke: Stroke,
-  previous: InkPoint,
-) {
-  let anchor = previous;
-  for (let index = stroke.rawPoints.length - 2; index >= 0; index -= 1) {
-    anchor = stroke.rawPoints[index];
-    const span = Math.hypot(
-      previous.x - anchor.x,
-      previous.y - anchor.y,
-    ) * stroke.inputScale;
-    if (span >= TANGENT_WINDOW_DISTANCE) break;
-  }
-
-  let x = previous.x - anchor.x;
-  let y = previous.y - anchor.y;
-  let length = Math.hypot(x, y);
-  if (length * stroke.inputScale < MINIMUM_SAMPLE_DISTANCE) {
-    x = sample.x - previous.rawX;
-    y = sample.y - previous.rawY;
-    length = Math.hypot(x, y);
-  }
-  if (length < 0.01) return null;
-  return { x: x / length, y: y / length };
-}
 
 function getTurnScore(sample: PointerSample, stroke: Stroke) {
   if (stroke.rawPoints.length < 2) return 0;
@@ -142,84 +114,9 @@ function createInkPoint(
   const rawVelocity = screenDistance / deltaTime;
   const sharpnessRatio = stroke.sharpness / 100;
   const sensitivityRatio = stroke.pressureSensitivity / 100;
-  const lowPressureRatio = clamp((0.5 - sample.pressure) / 0.44, 0, 1);
-  const thinStrokeSmoothing = sharpnessRatio
-    * sensitivityRatio
-    * lowPressureRatio;
-  const referenceWidth = previous?.width ?? stroke.size;
-  // 用屏幕像素宽判断「细笔」，1x / 放大写手感一致
-  const screenReferenceWidth = referenceWidth * stroke.inputScale;
-  const thinStrokeRatio = clamp((5 - screenReferenceWidth) / 4, 0, 1);
-  let x = sample.x;
-  let y = sample.y;
-  if (previous) {
-    const previous2 = stroke.rawPoints.at(-2);
-    const previous3 = stroke.rawPoints.at(-3);
-    const tangent = getStableTangent(sample, stroke, previous);
-    if (tangent) {
-      const tangentX = tangent.x;
-      const tangentY = tangent.y;
-      const errorX = sample.x - previous.x;
-      const errorY = sample.y - previous.y;
-      const along = errorX * tangentX + errorY * tangentY;
-      const lateralX = errorX - tangentX * along;
-      const lateralY = errorY - tangentY * along;
-      const lateralScreen = Math.hypot(lateralX, lateralY) * stroke.inputScale;
-      // 小横向位移≈手抖/采样噪声；真转弯横向更大，保留
-      const lateralJitterRatio = clamp(1 - lateralScreen / 1.8, 0, 1);
-      let turnConfidence = 0;
-      if (previous2 && previous3) {
-        const firstX = previous2.rawX - previous3.rawX;
-        const firstY = previous2.rawY - previous3.rawY;
-        const secondX = previous.rawX - previous2.rawX;
-        const secondY = previous.rawY - previous2.rawY;
-        const thirdX = sample.x - previous.rawX;
-        const thirdY = sample.y - previous.rawY;
-        const firstLength = Math.hypot(firstX, firstY);
-        const secondLength = Math.hypot(secondX, secondY);
-        const thirdLength = Math.hypot(thirdX, thirdY);
-        const previousCross = firstX * secondY - firstY * secondX;
-        const currentCross = secondX * thirdY - secondY * thirdX;
-        if (
-          previousCross * currentCross > 0
-          && firstLength > 0.01
-          && secondLength > 0.01
-          && thirdLength > 0.01
-        ) {
-          const previousTurn = Math.abs(previousCross)
-            / (firstLength * secondLength);
-          const currentTurn = Math.abs(currentCross)
-            / (secondLength * thirdLength);
-          turnConfidence = clamp(
-            Math.min(previousTurn, currentTurn) / 0.55,
-            0,
-            1,
-          );
-        }
-      }
-      const alongResponse = clamp(
-        0.88 + Math.min(screenDistance, 2) * 0.04,
-        0.88,
-        0.96,
-      );
-      const lateralResponse = clamp(
-        0.5
-          - thinStrokeSmoothing * 0.04
-          - thinStrokeRatio * 0.12
-          - lateralJitterRatio * (0.28 + thinStrokeRatio * 0.12)
-          + turnConfidence * 0.4,
-        0.12,
-        0.9,
-      );
-      x = previous.x
-        + tangentX * along * alongResponse
-        + lateralX * lateralResponse;
-      y = previous.y
-        + tangentY * along * alongResponse
-        + lateralY * lateralResponse;
-    }
-  }
-  const pressureResponse = 0.78 - thinStrokeSmoothing * 0.42;
+  const x = sample.x;
+  const y = sample.y;
+  const pressureResponse = 0.2 + sensitivityRatio * 0.18;
   const pressure = previous
     ? previous.pressure * (1 - pressureResponse)
       + sample.pressure * pressureResponse
@@ -227,11 +124,10 @@ function createInkPoint(
   const velocity = previous
     ? previous.velocity * 0.25 + rawVelocity * 0.75
     : 0;
-  const minimumWidthRatio = 0.42 - sharpnessRatio * 0.28;
-  const pressureExponent = (0.2 + sensitivityRatio * 0.9)
-    * (1 - thinStrokeRatio * 0.4);
-  const pressureFactor = minimumWidthRatio
-    + (1 - minimumWidthRatio) * Math.pow(pressure, pressureExponent);
+  const normalizedPressure = clamp((pressure - 0.03) / 0.92, 0, 1);
+  const pressureFloor = 0.18 + (1 - sensitivityRatio) * 0.12;
+  const pressureFactor = pressureFloor
+    + (1 - pressureFloor) * normalizedPressure;
   const speedStrength = 0.03 + sharpnessRatio * 0.21;
   const speedFloor = 0.85 - sharpnessRatio * 0.46;
   const speedFactor = clamp(1.06 - velocity * speedStrength, speedFloor, 1);
@@ -315,14 +211,9 @@ export function appendSample(stroke: Stroke, sample: PointerSample): InkPoint[] 
     ? Math.hypot(sample.x - previous.rawX, sample.y - previous.rawY)
       * stroke.inputScale
     : 0;
+  if (previous && screenDistance < MINIMUM_SAMPLE_DISTANCE) return [];
+
   const point = createInkPoint(sample, stroke, previous);
-  if (
-    previous
-    && Math.hypot(point.x - previous.x, point.y - previous.y)
-      * stroke.inputScale < MINIMUM_SAMPLE_DISTANCE
-  ) {
-    return [];
-  }
   smoothedTurnScores.set(
     stroke,
     getSmoothedTurnScore(sample, stroke, screenDistance),
