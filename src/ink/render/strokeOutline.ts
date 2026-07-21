@@ -45,9 +45,10 @@ function densifyPoints(points: readonly InkPoint[]) {
     const start = points[index - 1];
     const end = points[index];
     const distance = Math.hypot(end.x - start.x, end.y - start.y);
-    const maximumStep = clamp(Math.min(start.width, end.width) * 0.8, 0.7, 2);
+    // 步长跟线宽走，避免过稀法线翻折
+    const maximumStep = clamp(Math.min(start.width, end.width) * 0.45, 0.35, 1.2);
     const subdivisions = Math.min(
-      MAX_SUBDIVISIONS,
+      MAX_SUBDIVISIONS * 2,
       Math.max(1, Math.ceil(distance / maximumStep)),
     );
 
@@ -65,60 +66,32 @@ function densifyPoints(points: readonly InkPoint[]) {
   return result;
 }
 
-function smoothStrokePass(points: readonly InkPoint[]) {
-  if (points.length < 5) return [...points];
-  return points.map((point, index) => {
-    if (index < 2 || index > points.length - 3) return { ...point };
-    const previous2 = points[index - 2];
-    const previous = points[index - 1];
-    const next = points[index + 1];
-    const next2 = points[index + 2];
-    const incomingX = point.x - previous.x;
-    const incomingY = point.y - previous.y;
-    const outgoingX = next.x - point.x;
-    const outgoingY = next.y - point.y;
-    const incomingLength = Math.hypot(incomingX, incomingY);
-    const outgoingLength = Math.hypot(outgoingX, outgoingY);
-    const turn = incomingLength > MIN_DISTANCE && outgoingLength > MIN_DISTANCE
-      ? Math.acos(clamp(
-        (incomingX * outgoingX + incomingY * outgoingY)
-          / (incomingLength * outgoingLength),
-        -1,
-        1,
-      ))
-      : 0;
-    const cornerRatio = clamp((turn - 0.28) / 0.9, 0, 1);
-    // 轮廓只轻修几何；少抹 = 少软、少粘
-    const positionBlend = 0.32 * (1 - cornerRatio * 0.9);
-    const averageX = previous2.x * 0.1
-      + previous.x * 0.2
-      + point.x * 0.4
-      + next.x * 0.2
-      + next2.x * 0.1;
-    const averageY = previous2.y * 0.1
-      + previous.y * 0.2
-      + point.y * 0.4
-      + next.y * 0.2
-      + next2.y * 0.1;
-    return {
-      ...point,
-      x: point.x + (averageX - point.x) * positionBlend,
-      y: point.y + (averageY - point.y) * positionBlend,
-      width: point.width,
-    };
-  });
-}
-
-// 一遍即可；宽度忠于模型层
+// 定稿已在模型层重建；轮廓层不再二次改中心线（避免又抖又肉）
 function smoothStroke(points: readonly InkPoint[]) {
-  return smoothStrokePass(points);
+  return points.map((point) => ({ ...point }));
 }
 
 function getNormal(points: readonly InkPoint[], index: number) {
-  const previous = points[Math.max(0, index - 2)];
-  const next = points[Math.min(points.length - 1, index + 2)];
-  const directionX = next.x - previous.x;
-  const directionY = next.y - previous.y;
+  // 真因3：±2 点看法线太噪 → 变宽轮廓锯齿。加宽窗口 + 平均方向
+  const span = 3;
+  let directionX = 0;
+  let directionY = 0;
+  let weightSum = 0;
+  for (let offset = 1; offset <= span; offset += 1) {
+    const previous = points[Math.max(0, index - offset)];
+    const next = points[Math.min(points.length - 1, index + offset)];
+    const dx = next.x - previous.x;
+    const dy = next.y - previous.y;
+    const length = Math.hypot(dx, dy);
+    if (length < MIN_DISTANCE) continue;
+    const weight = 1 / offset;
+    directionX += (dx / length) * weight;
+    directionY += (dy / length) * weight;
+    weightSum += weight;
+  }
+  if (weightSum < 1e-6) return { x: 0, y: 1 };
+  directionX /= weightSum;
+  directionY /= weightSum;
   const length = Math.hypot(directionX, directionY);
   if (length < MIN_DISTANCE) return { x: 0, y: 1 };
   return {
@@ -177,10 +150,11 @@ function getTurn(points: readonly InkPoint[], index: number) {
 }
 
 function splitSmoothRuns(points: readonly InkPoint[]) {
+  // 只在很尖的折角切开，避免普通弯被拆成多段接缝抖
   const runs: InkPoint[][] = [];
   let start = 0;
   for (let index = 1; index < points.length - 1; index += 1) {
-    if (getTurn(points, index) < Math.PI * 0.32) continue;
+    if (getTurn(points, index) < Math.PI * 0.55) continue;
     runs.push(points.slice(start, index + 1));
     start = index;
   }

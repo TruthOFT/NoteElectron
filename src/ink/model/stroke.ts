@@ -4,6 +4,7 @@ import type {
   PointerSample,
   Stroke,
 } from '../types';
+import { rebuildStrokeInScreenSpace } from './screenResample';
 import { stabilizePoint } from './smoothing';
 
 const clamp = (value: number, min: number, max: number) =>
@@ -13,14 +14,12 @@ const lerp = (start: number, end: number, amount: number) =>
   start + (end - start) * amount;
 
 const TURN_WINDOW_DISTANCE = 16;
-const MAX_TURN_WIDTH_BOOST = 0.35;
+const MAX_TURN_WIDTH_BOOST = 0.12;
 const TURN_RISE_DISTANCE = 3;
 const TURN_FALL_DISTANCE = 6;
-const MINIMUM_SAMPLE_DISTANCE = 0.8;
-// 尾点少 = 实时更跟手，少「软尾巴」
+/** 屏空间最小步长：滤亚像素抖，不制造滞后 */
+const MINIMUM_SAMPLE_DISTANCE = 0.55;
 const LIVE_TAIL_POINTS = 1;
-const SHORT_STROKE_RESMOOTH_LENGTH = 24;
-const SHORT_STROKE_RESMOOTH_WEIGHT = 0.14;
 
 const smoothedTurnScores = new WeakMap<Stroke, number>();
 
@@ -107,6 +106,34 @@ function getSmoothedTurnScore(
   return previous + (target - previous) * response;
 }
 
+/**
+ * 写时位置：时间域轻量 One-Euro 风格，禁止「小步粘前点」。
+ * 粘前点会让笔迹落后笔尖 → 手去追 → 更抖（你说的粘手）。
+ */
+function filterPosition(
+  sample: PointerSample,
+  previous: InkPoint | undefined,
+  screenDistance: number,
+  deltaTime: number,
+) {
+  if (!previous) {
+    return { x: sample.x, y: sample.y };
+  }
+
+  // 屏空间速度（px/ms）
+  const speed = screenDistance / Math.max(1, deltaTime);
+  // 截止：静止多滤，快写几乎直通
+  const cutoff = 0.8 + speed * 2.5;
+  const tau = 1 / (2 * Math.PI * cutoff);
+  const te = Math.max(1, deltaTime);
+  const alpha = clamp(1 / (1 + tau / te), 0.55, 0.95);
+
+  return {
+    x: previous.x + (sample.x - previous.x) * alpha,
+    y: previous.y + (sample.y - previous.y) * alpha,
+  };
+}
+
 function createInkPoint(
   sample: PointerSample,
   stroke: Stroke,
@@ -120,30 +147,35 @@ function createInkPoint(
   const rawVelocity = screenDistance / deltaTime;
   const sharpnessRatio = stroke.sharpness / 100;
   const sensitivityRatio = stroke.pressureSensitivity / 100;
-  const x = sample.x;
-  const y = sample.y;
+
+  const { x, y } = filterPosition(
+    sample,
+    previous,
+    screenDistance,
+    deltaTime,
+  );
+
   const pressureResponse = 0.2 + sensitivityRatio * 0.18;
   const pressure = previous
     ? previous.pressure * (1 - pressureResponse)
       + sample.pressure * pressureResponse
     : sample.pressure;
-  // 长笔画滤波保持；短笔画靠启动速度基准，不在这里再加硬
   const velocity = previous
-    ? previous.velocity * 0.6 + rawVelocity * 0.4
+    ? previous.velocity * 0.55 + rawVelocity * 0.45
     : 0;
   const normalizedPressure = clamp((pressure - 0.03) / 0.92, 0, 1);
   const pressureFloor = 0.18 + (1 - sensitivityRatio) * 0.12;
   const pressureFactor = pressureFloor
     + (1 - pressureFloor) * normalizedPressure;
-  const speedStrength = 0.03 + sharpnessRatio * 0.1;
-  const speedFloor = 0.78 - sharpnessRatio * 0.22;
+
+  const speedStrength = 0.02 + sharpnessRatio * 0.05;
+  const speedFloor = 0.84 - sharpnessRatio * 0.12;
   const currentSpeedFactor = clamp(
     1.02 - velocity * speedStrength,
     speedFloor,
     1,
   );
 
-  // 前 7～12 屏像素共用稳定启动速度，再平滑切到正常速度动态
   const screenBaseWidth = stroke.size * stroke.inputScale;
   const startupDistance = clamp(screenBaseWidth * 1.5, 7, 12);
   if (previous) {
@@ -164,7 +196,6 @@ function createInkPoint(
     ? currentSpeedFactor
     : lerp(stroke.startupSpeedFactor, currentSpeedFactor, startupT);
 
-  // 不足 3 个位置点时无可靠转向，不做转弯增粗
   const turnScore = stroke.rawPoints.length < 2
     ? 0
     : getSmoothedTurnScore(sample, stroke, screenDistance);
@@ -173,7 +204,6 @@ function createInkPoint(
     : 1 + turnScore * sharpnessRatio * MAX_TURN_WIDTH_BOOST;
 
   const highSensitivity = clamp((sensitivityRatio - 0.55) / 0.45, 0, 1);
-  // 最小线宽按屏幕像素，避免 1x 细笔高低起伏
   const minimumWidth = (
     0.8 - highSensitivity * sharpnessRatio * 0.4
   ) / stroke.inputScale;
@@ -182,7 +212,6 @@ function createInkPoint(
     stroke.size * pressureFactor * speedFactor * turnFactor,
   );
 
-  // 首点 velocity=0 偏粗；第一段有效速度算出后回填
   if (previous && stroke.rawPoints.length === 1) {
     stroke.rawPoints[0].width = targetWidth;
     if (stroke.points.length === 1) {
@@ -190,30 +219,15 @@ function createInkPoint(
     }
   }
 
-  const baseWidthResponse = targetWidth < (previous?.width ?? targetWidth)
-    ? 0.68 + sensitivityRatio * 0.16
-    : 0.58 - sensitivityRatio * 0.12;
-  const screenTargetWidth = targetWidth * stroke.inputScale;
-  const thinWidthRatio = clamp((3 - screenTargetWidth) / 2.4, 0, 1);
-  const widthResponse = baseWidthResponse
-    * (1 - thinWidthRatio * 0.35);
+  // 宽度响应：中等，避免边线锯齿，也不拖成墨糊
+  const widthResponse = targetWidth < (previous?.width ?? targetWidth)
+    ? 0.55
+    : 0.42;
   const respondedWidth = previous
     ? previous.width + (targetWidth - previous.width) * widthResponse
     : targetWidth;
-  const screenPrevWidth = (previous?.width ?? respondedWidth) * stroke.inputScale;
-  const thinResultRatio = previous
-    ? clamp(
-      (3 - Math.min(screenPrevWidth, respondedWidth * stroke.inputScale)) / 2.6,
-      0,
-      1,
-    )
-    : 0;
-  // 线宽变化上限按屏幕像素，再换回世界坐标
-  const maximumScreenWidthChange = (
-    0.05
-    + Math.min(screenDistance, 2) * 0.1
-    + (1 - thinResultRatio) * 0.22
-  ) * (1 - thinResultRatio * 0.55);
+  const maximumScreenWidthChange = 0.08
+    + Math.min(screenDistance, 2) * 0.1;
   const maximumWidthChange = maximumScreenWidthChange / stroke.inputScale;
   const width = previous
     ? previous.width + clamp(
@@ -260,7 +274,6 @@ export function appendSample(stroke: Stroke, sample: PointerSample): InkPoint[] 
     : 0;
   if (previous && screenDistance < MINIMUM_SAMPLE_DISTANCE) return [];
 
-  // 先累计弧长再建点，启动区用到当前段
   stroke.screenLength += screenDistance;
   const point = createInkPoint(sample, stroke, previous);
   smoothedTurnScores.set(
@@ -272,10 +285,20 @@ export function appendSample(stroke: Stroke, sample: PointerSample): InkPoint[] 
   const count = stroke.rawPoints.length;
   if (count < stroke.liveTailPoints + 2) return [];
 
+  // 起笔：第二点立刻稳，别塞双生点
   if (stroke.points.length === 0) {
-    const stableStart = stroke.rawPoints.slice(0, 2).map((item) => ({ ...item }));
-    stroke.points.push(...stableStart);
-    return stableStart;
+    const first = stroke.rawPoints[0];
+    const middle = stroke.rawPoints[1];
+    const last = stroke.rawPoints[2];
+    const stableMiddle = stabilizePoint(
+      first,
+      middle,
+      last,
+      stroke.stability,
+      stroke.inputScale,
+    );
+    stroke.points.push({ ...first }, stableMiddle);
+    return [{ ...first }, stableMiddle];
   }
 
   const stableIndex = count - stroke.liveTailPoints - 1;
@@ -291,37 +314,17 @@ export function appendSample(stroke: Stroke, sample: PointerSample): InkPoint[] 
 }
 
 export function finishStroke(stroke: Stroke): InkPoint[] {
-  const tailStart = stroke.points.length === 0
-    ? 0
-    : Math.max(0, stroke.rawPoints.length - stroke.liveTailPoints);
-  const addedPoints = stroke.rawPoints
-    .slice(tailStart)
-    .map((point) => ({ ...point }));
+  const source = stroke.rawPoints.length > 0
+    ? stroke.rawPoints
+    : stroke.points;
+  if (source.length === 0) return [];
 
-  stroke.points.push(...addedPoints);
-
-  // 短笔画抬笔轻量再平滑：源副本防偏移；权重轻，少肉感
-  if (
-    stroke.screenLength < SHORT_STROKE_RESMOOTH_LENGTH
-    && stroke.points.length >= 3
-  ) {
-    const weight = SHORT_STROKE_RESMOOTH_WEIGHT;
-    const source = stroke.points.map((point) => ({ ...point }));
-    for (let index = 1; index < source.length - 1; index += 1) {
-      const previous = source[index - 1];
-      const current = source[index];
-      const next = source[index + 1];
-      stroke.points[index] = {
-        ...current,
-        x: previous.x * weight
-          + current.x * (1 - 2 * weight)
-          + next.x * weight,
-        y: previous.y * weight
-          + current.y * (1 - 2 * weight)
-          + next.y * weight,
-      };
-    }
+  if (source.length === 1) {
+    stroke.points = [{ ...source[0] }];
+    return [...stroke.points];
   }
 
-  return addedPoints;
+  // 定稿：屏空间重建；写时保持低延迟
+  stroke.points = rebuildStrokeInScreenSpace(source, stroke.inputScale);
+  return [...stroke.points];
 }

@@ -28,7 +28,8 @@ type InkCanvasOptions = {
   pressureSensitivity: number;
 };
 
-const FIXED_STABILITY = 80;
+// 写时轻稳定；重整理在抬笔 rebuild
+const FIXED_STABILITY = 55;
 const MIN_ZOOM = 0.25;
 const MAX_ZOOM = 4;
 const ZOOM_STEP = 0.1;
@@ -123,21 +124,9 @@ export default function useInkCanvas(options: InkCanvasOptions) {
       clearPreview();
       if (!stroke || stroke.rawPoints.length === 0) return;
 
-      const stableTail = stroke.points.at(-1);
+      // 预览优先跟手：用已滤波的 rawPoints，避免再叠一层滞后稳定点
       const context = prepareContext(previewCanvas, viewRef.current);
-      let previewPoints: InkPoint[];
-      if (stableTail) {
-        const tailStart = Math.max(
-          0,
-          stroke.rawPoints.length - stroke.liveTailPoints,
-        );
-        previewPoints = [
-          ...stroke.points,
-          ...stroke.rawPoints.slice(tailStart),
-        ];
-      } else {
-        previewPoints = stroke.rawPoints;
-      }
+      const previewPoints = stroke.rawPoints;
       drawPoints(context, previewPoints, stroke.color);
       previewDirtyRect = getDirtyRect(previewPoints);
     };
