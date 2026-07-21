@@ -16,8 +16,10 @@ const TURN_WINDOW_DISTANCE = 16;
 const MAX_TURN_WIDTH_BOOST = 0.35;
 const TURN_RISE_DISTANCE = 3;
 const TURN_FALL_DISTANCE = 6;
-const MINIMUM_SAMPLE_DISTANCE = 0.5;
-const LIVE_TAIL_POINTS = 1;
+const MINIMUM_SAMPLE_DISTANCE = 0.8;
+const LIVE_TAIL_POINTS = 2;
+const SHORT_STROKE_RESMOOTH_LENGTH = 28;
+const SHORT_STROKE_RESMOOTH_WEIGHT = 0.22;
 
 const smoothedTurnScores = new WeakMap<Stroke, number>();
 
@@ -296,5 +298,28 @@ export function finishStroke(stroke: Stroke): InkPoint[] {
     .map((point) => ({ ...point }));
 
   stroke.points.push(...addedPoints);
+
+  // 短笔画抬笔后再过一遍三点平滑：只动位置，不动宽度
+  if (
+    stroke.screenLength < SHORT_STROKE_RESMOOTH_LENGTH
+    && stroke.points.length >= 3
+  ) {
+    const weight = SHORT_STROKE_RESMOOTH_WEIGHT;
+    for (let index = 1; index < stroke.points.length - 1; index += 1) {
+      const previous = stroke.points[index - 1];
+      const current = stroke.points[index];
+      const next = stroke.points[index + 1];
+      stroke.points[index] = {
+        ...current,
+        x: previous.x * weight
+          + current.x * (1 - 2 * weight)
+          + next.x * weight,
+        y: previous.y * weight
+          + current.y * (1 - 2 * weight)
+          + next.y * weight,
+      };
+    }
+  }
+
   return addedPoints;
 }

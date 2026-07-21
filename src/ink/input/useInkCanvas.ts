@@ -28,7 +28,7 @@ type InkCanvasOptions = {
   pressureSensitivity: number;
 };
 
-const FIXED_STABILITY = 80;
+const FIXED_STABILITY = 90;
 const MIN_ZOOM = 0.25;
 const MAX_ZOOM = 4;
 const ZOOM_STEP = 0.1;

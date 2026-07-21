@@ -25,10 +25,10 @@ export function stabilizePoint(
     )
     : 1;
   const turn = Math.acos(cosine);
-  // FIXED_STABILITY 可很大，压到 [0,1]；直笔仍给满档三点平滑
+  // FIXED_STABILITY 可很大，压到 [0,1]；直笔 + 短采样更狠压抖
   const stabilityRatio = clamp(stability / 100, 0, 1);
-  const maximumWeight = 0.12 + stabilityRatio * 0.28;
-  const minimumWeight = 0.02 + stabilityRatio * 0.04;
+  const maximumWeight = 0.18 + stabilityRatio * 0.32;
+  const minimumWeight = 0.04 + stabilityRatio * 0.06;
   const basePositionWeight = clamp(
     maximumWeight * (1 - turn / (Math.PI * 0.72)),
     minimumWeight,
@@ -49,10 +49,10 @@ export function stabilizePoint(
     1,
   );
   const jitterBoost = shortSampleRatio * (
-    0.04 + sharpJitterRatio * 0.06
+    0.08 + sharpJitterRatio * 0.1
   );
   const positionWeight = Math.min(
-    0.38,
+    0.42,
     basePositionWeight + jitterBoost,
   );
   // 宽度平滑仍可看细笔；位置与线宽解耦
