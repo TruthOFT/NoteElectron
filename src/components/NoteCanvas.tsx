@@ -28,7 +28,12 @@ export default function NoteCanvas() {
         </label>
         <span className="brush-hud-hint">0 匀粗 · 100 轻重差大</span>
       </div>
-      <canvas ref={committedRef} className="note-canvas note-canvas-committed" />
+      <svg
+        ref={committedRef}
+        className="note-canvas note-canvas-committed"
+        xmlns="http://www.w3.org/2000/svg"
+        aria-hidden="true"
+      />
       <canvas ref={liveRef} className="note-canvas note-canvas-live" />
     </div>
   );
