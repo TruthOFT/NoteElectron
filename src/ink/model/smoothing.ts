@@ -25,10 +25,10 @@ export function stabilizePoint(
     )
     : 1;
   const turn = Math.acos(cosine);
-  // FIXED_STABILITY 可很大，压到 [0,1]；直笔 + 短采样更狠压抖
+  // 直笔防抖保留；上限收一点，少「果冻/粘」
   const stabilityRatio = clamp(stability / 100, 0, 1);
-  const maximumWeight = 0.18 + stabilityRatio * 0.32;
-  const minimumWeight = 0.04 + stabilityRatio * 0.06;
+  const maximumWeight = 0.14 + stabilityRatio * 0.28;
+  const minimumWeight = 0.03 + stabilityRatio * 0.05;
   const basePositionWeight = clamp(
     maximumWeight * (1 - turn / (Math.PI * 0.72)),
     minimumWeight,
@@ -36,7 +36,7 @@ export function stabilizePoint(
   );
   const screenWidth = current.width * inputScale;
   const sampleSpan = Math.max(incomingLength, outgoingLength) * inputScale;
-  // 短步长才加防抖；中心线稳定不跟线宽走（避免尖锐→变细→更抹圆）
+  // 短步长才加防抖；中心线稳定不跟线宽走
   const jitterScale = Math.max(2.8, screenWidth * 1.4);
   const shortSampleRatio = clamp(
     (jitterScale - sampleSpan) / (jitterScale * 0.7),
@@ -48,20 +48,16 @@ export function stabilizePoint(
     0,
     1,
   );
-  const jitterBoost = shortSampleRatio * (
-    0.08 + sharpJitterRatio * 0.1
-  );
+  // 转角减弱位置抹平，横折/小钩别粘成一团
+  const cornerRatio = clamp((turn - 0.28) / 0.9, 0, 1);
+  const cornerProtection = 1 - cornerRatio * 0.7;
+  const jitterBoost = shortSampleRatio
+    * (0.07 + sharpJitterRatio * 0.08)
+    * cornerProtection;
+  const localMaximumWeight = 0.38 - cornerRatio * 0.12;
   const positionWeight = Math.min(
-    0.42,
+    localMaximumWeight,
     basePositionWeight + jitterBoost,
-  );
-  // 宽度平滑仍可看细笔；位置与线宽解耦
-  const thinWidthRatio = clamp((3 - screenWidth) / 2.5, 0, 1);
-  const widthWeight = Math.min(
-    0.36,
-    stabilityRatio * 0.12
-      + thinWidthRatio * 0.18
-      + shortSampleRatio * 0.06,
   );
 
   return {
@@ -75,9 +71,8 @@ export function stabilizePoint(
     rawY: current.rawY,
     pressure: current.pressure,
     velocity: current.velocity,
-    width: previous.width * widthWeight
-      + current.width * (1 - widthWeight * 2)
-      + next.width * widthWeight,
+    // 宽度只在 stroke 定；再抹宽会「墨糊粘连」
+    width: current.width,
     time: current.time,
   };
 }

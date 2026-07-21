@@ -88,9 +88,8 @@ function smoothStrokePass(points: readonly InkPoint[]) {
       ))
       : 0;
     const cornerRatio = clamp((turn - 0.28) / 0.9, 0, 1);
-    // 中心线平滑不跟线宽走；尖锐度只影响粗细动态
-    const positionBlend = 0.58 * (1 - cornerRatio * 0.9);
-    const widthBlend = 0.72;
+    // 轮廓只轻修几何；少抹 = 少软、少粘
+    const positionBlend = 0.32 * (1 - cornerRatio * 0.9);
     const averageX = previous2.x * 0.1
       + previous.x * 0.2
       + point.x * 0.4
@@ -101,35 +100,18 @@ function smoothStrokePass(points: readonly InkPoint[]) {
       + point.y * 0.4
       + next.y * 0.2
       + next2.y * 0.1;
-    const averageWidth = previous2.width * 0.1
-      + previous.width * 0.2
-      + point.width * 0.4
-      + next.width * 0.2
-      + next2.width * 0.1;
     return {
       ...point,
       x: point.x + (averageX - point.x) * positionBlend,
       y: point.y + (averageY - point.y) * positionBlend,
-      width: point.width + (averageWidth - point.width) * widthBlend,
+      width: point.width,
     };
   });
 }
 
+// 一遍即可；宽度忠于模型层
 function smoothStroke(points: readonly InkPoint[]) {
-  const geometrySmoothed = smoothStrokePass(smoothStrokePass(points));
-  return geometrySmoothed.map((point, index) => {
-    if (index < 2 || index > geometrySmoothed.length - 3) return point;
-    const previous2 = geometrySmoothed[index - 2];
-    const previous = geometrySmoothed[index - 1];
-    const next = geometrySmoothed[index + 1];
-    const next2 = geometrySmoothed[index + 2];
-    const width = previous2.width * 0.1
-      + previous.width * 0.2
-      + point.width * 0.4
-      + next.width * 0.2
-      + next2.width * 0.1;
-    return { ...point, width };
-  });
+  return smoothStrokePass(points);
 }
 
 function getNormal(points: readonly InkPoint[], index: number) {
@@ -235,9 +217,6 @@ export function createStrokeOutlinePath(sourcePoints: readonly InkPoint[]) {
   if (points.length === 1) return createCirclePath(points[0]);
 
   const runs = splitSmoothRuns(points);
-  const parts = runs.map(createSmoothRunPath);
-  for (let index = 1; index < runs.length; index += 1) {
-    parts.push(createCirclePath(runs[index][0]));
-  }
-  return parts.join(' ');
+  // 转角不补整圆，避免横折/交接「墨团粘连」
+  return runs.map(createSmoothRunPath).join(' ');
 }
