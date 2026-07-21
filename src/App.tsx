@@ -1,10 +1,10 @@
-import InkCanvas from './components/InkCanvas';
+import NoteCanvas from './components/NoteCanvas';
 import './App.css';
 
 export default function App() {
   return (
     <main className="app-shell">
-      <InkCanvas />
+      <NoteCanvas />
     </main>
   );
 }
