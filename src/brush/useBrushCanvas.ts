@@ -1,7 +1,12 @@
 import { useEffect, useRef } from 'react';
-import { drawStroke, drawStrokes } from './render';
+import { drawStroke } from './render';
 import { appendPoint, createStroke, finishStroke } from './stroke';
 import type { BrushSettings, BrushStroke } from './types';
+import {
+  appendVectorStroke,
+  redrawVectorStrokes,
+  resizeVectorLayer,
+} from './vectorRenderer';
 
 const DEFAULT_SETTINGS: BrushSettings = {
   color: '#111827',
@@ -40,7 +45,7 @@ function sampleEvent(
 }
 
 export default function useBrushCanvas(settings: Partial<BrushSettings> = {}) {
-  const committedRef = useRef<HTMLCanvasElement>(null);
+  const committedRef = useRef<SVGSVGElement>(null);
   const liveRef = useRef<HTMLCanvasElement>(null);
   const settingsRef = useRef({ ...DEFAULT_SETTINGS, ...settings });
   settingsRef.current = { ...DEFAULT_SETTINGS, ...settings };
@@ -65,12 +70,6 @@ export default function useBrushCanvas(settings: Partial<BrushSettings> = {}) {
       return context;
     };
 
-    const redrawCommitted = () => {
-      const context = setupContext(committed);
-      context.clearRect(0, 0, committed.width, committed.height);
-      drawStrokes(context, history);
-    };
-
     const clearLive = () => {
       const context = setupContext(live);
       context.clearRect(0, 0, live.width, live.height);
@@ -89,9 +88,9 @@ export default function useBrushCanvas(settings: Partial<BrushSettings> = {}) {
     };
 
     const resize = () => {
-      dpr = resizeCanvas(committed);
-      resizeCanvas(live);
-      redrawCommitted();
+      dpr = resizeCanvas(live);
+      resizeVectorLayer(committed, live.width, live.height);
+      redrawVectorStrokes(committed, history);
       paintLive();
     };
 
@@ -124,17 +123,20 @@ export default function useBrushCanvas(settings: Partial<BrushSettings> = {}) {
       onMove(event);
     };
 
-    const onUp = (event: PointerEvent) => {
+    const finishActive = (event: PointerEvent, appendFinalPoint: boolean) => {
       if (pointerId !== event.pointerId || !active) return;
       if (frame !== null) {
         window.cancelAnimationFrame(frame);
         frame = null;
       }
 
+      if (appendFinalPoint) {
+        appendPoint(active, sampleEvent(event, live, dpr));
+      }
       finishStroke(active);
       if (active.points.length > 0) {
         history.push(active);
-        drawStroke(setupContext(committed), active);
+        appendVectorStroke(committed, active);
       }
       active = null;
       pointerId = null;
@@ -144,6 +146,9 @@ export default function useBrushCanvas(settings: Partial<BrushSettings> = {}) {
         live.releasePointerCapture(event.pointerId);
       }
     };
+
+    const onUp = (event: PointerEvent) => finishActive(event, true);
+    const onCancel = (event: PointerEvent) => finishActive(event, false);
 
     const supportsRaw = 'onpointerrawupdate' in window;
     const observer = new ResizeObserver(resize);
@@ -158,7 +163,7 @@ export default function useBrushCanvas(settings: Partial<BrushSettings> = {}) {
       live.addEventListener('pointermove', onMove);
     }
     live.addEventListener('pointerup', onUp);
-    live.addEventListener('pointercancel', onUp);
+    live.addEventListener('pointercancel', onCancel);
 
     return () => {
       observer.disconnect();
@@ -170,7 +175,7 @@ export default function useBrushCanvas(settings: Partial<BrushSettings> = {}) {
         live.removeEventListener('pointermove', onMove);
       }
       live.removeEventListener('pointerup', onUp);
-      live.removeEventListener('pointercancel', onUp);
+      live.removeEventListener('pointercancel', onCancel);
     };
   }, []);
 
