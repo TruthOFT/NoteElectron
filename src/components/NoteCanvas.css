@@ -8,6 +8,45 @@
   background-size: 20px 20px;
 }
 
+.brush-hud {
+  position: absolute;
+  top: 14px;
+  left: 50%;
+  z-index: 10;
+  display: flex;
+  min-width: 220px;
+  flex-direction: column;
+  gap: 4px;
+  padding: 10px 14px;
+  border: 1px solid rgb(218 222 232 / 90%);
+  border-radius: 14px;
+  background: rgb(255 255 255 / 92%);
+  box-shadow: 0 10px 28px rgb(32 39 61 / 12%);
+  transform: translateX(-50%);
+  backdrop-filter: blur(12px);
+  user-select: none;
+}
+
+.brush-hud-label {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  color: #1f2937;
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.brush-hud-label input[type='range'] {
+  width: 100%;
+  accent-color: #4263eb;
+  cursor: pointer;
+}
+
+.brush-hud-hint {
+  color: #6b7280;
+  font-size: 11px;
+}
+
 .note-canvas {
   position: absolute;
   inset: 0;

@@ -38,17 +38,30 @@ function filterPosition(
   };
 }
 
-function radiusFromPressure(size: number, pressure: number) {
-  // 压感只做轻调制，默认稳；避免宽噪声看起来像路径抖
-  const p = clamp(pressure, 0, 1);
-  const factor = 0.62 + 0.38 * p;
-  return Math.max(0.6, (size / 2) * factor);
+/**
+ * 压感 → 半径。
+ * sensitivity 高：轻更细、重更粗；低：接近匀粗（稳）。
+ * 线性 + 死区，不用幂曲线（中段更好控）。
+ */
+function radiusFromPressure(
+  size: number,
+  pressure: number,
+  sensitivity: number,
+) {
+  const sens = clamp(sensitivity, 0, 1);
+  // 设备压感底部/顶部常不准
+  const normalized = clamp((pressure - 0.02) / 0.93, 0, 1);
+  const minFactor = 0.55 - sens * 0.32; // 0.55 → 0.23
+  const maxFactor = 0.88 + sens * 0.22; // 0.88 → 1.10
+  const factor = minFactor + (maxFactor - minFactor) * normalized;
+  return Math.max(0.45, (size / 2) * factor);
 }
 
 export function createStroke(settings: BrushSettings): BrushStroke {
   return {
     color: settings.color,
     size: settings.size,
+    pressureSensitivity: clamp(settings.pressureSensitivity, 0, 1),
     points: [],
   };
 }
@@ -82,13 +95,27 @@ export function appendPoint(
     return false;
   }
 
+  // 压感 EMA：跟手但滤跳点；灵敏度高时略更跟
+  const pressureAlpha = 0.45 + stroke.pressureSensitivity * 0.25;
   const pressure = previous
-    ? previous.pressure * 0.35 + sample.pressure * 0.65
+    ? previous.pressure * (1 - pressureAlpha) + sample.pressure * pressureAlpha
     : sample.pressure;
-  const targetR = radiusFromPressure(stroke.size, pressure);
+  const targetR = radiusFromPressure(
+    stroke.size,
+    pressure,
+    stroke.pressureSensitivity,
+  );
+  // 每步允许变化量随笔粗，压感能跟上但不毛刺
+  const maxDelta = Math.max(0.22, stroke.size * 0.07);
   const r = previous
-    ? previous.r + clamp(targetR - previous.r, -0.35, 0.35)
+    ? previous.r + clamp(targetR - previous.r, -maxDelta, maxDelta)
     : targetR;
+
+  // 首点常 pressure=0 偏细：第二点回填
+  if (previous && stroke.points.length === 1) {
+    stroke.points[0].r = r;
+    stroke.points[0].pressure = pressure;
+  }
 
   stroke.points.push({
     x,

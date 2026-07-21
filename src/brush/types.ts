@@ -11,10 +11,14 @@ export type BrushPoint = {
 export type BrushStroke = {
   color: string;
   size: number;
+  /** 0～1，越大轻重差越明显 */
+  pressureSensitivity: number;
   points: BrushPoint[];
 };
 
 export type BrushSettings = {
   color: string;
   size: number;
+  /** 0～1，默认 0.75 */
+  pressureSensitivity: number;
 };

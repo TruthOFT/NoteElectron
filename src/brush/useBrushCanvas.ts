@@ -6,6 +6,7 @@ import type { BrushSettings, BrushStroke } from './types';
 const DEFAULT_SETTINGS: BrushSettings = {
   color: '#111827',
   size: 6,
+  pressureSensitivity: 0.75,
 };
 
 function resizeCanvas(canvas: HTMLCanvasElement) {
