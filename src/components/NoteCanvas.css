@@ -15,5 +15,14 @@
   height: 100%;
   display: block;
   touch-action: none;
+}
+
+.note-canvas-committed {
+  z-index: 1;
+  pointer-events: none;
+}
+
+.note-canvas-live {
+  z-index: 2;
   cursor: crosshair;
 }
