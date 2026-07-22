@@ -86,6 +86,7 @@ function sampleEvent(
 export default function useBrushCanvas(settings: Partial<BrushSettings> = {}) {
   const committedRef = useRef<HTMLCanvasElement>(null);
   const liveRef = useRef<HTMLCanvasElement>(null);
+  const clearCanvasRef = useRef<() => void>(() => {});
   const settingsRef = useRef({ ...DEFAULT_SETTINGS, ...settings });
   settingsRef.current = { ...DEFAULT_SETTINGS, ...settings };
 
@@ -114,13 +115,28 @@ export default function useBrushCanvas(settings: Partial<BrushSettings> = {}) {
       liveSurface.clear();
     };
 
+    clearCanvasRef.current = () => {
+      if (frame !== null) {
+        window.cancelAnimationFrame(frame);
+        frame = null;
+      }
+      if (pointerId !== null && live.hasPointerCapture(pointerId)) {
+        live.releasePointerCapture(pointerId);
+      }
+      active = null;
+      pointerId = null;
+      history.length = 0;
+      clearLive();
+      committedSurface.clear();
+    };
+
     const paintLive = () => {
       frame = null;
       if (!active || active.points.length === 0) {
         clearLive();
         return;
       }
-      const nextDisplayPoints = buildDisplayPoints(active.points);
+      const nextDisplayPoints = buildDisplayPoints(active.points, dpr);
       const dirtyStart = getDirtyStart(liveDisplayPoints, nextDisplayPoints);
       if (dirtyStart === null) {
         liveDisplayPoints = nextDisplayPoints;
@@ -204,7 +220,7 @@ export default function useBrushCanvas(settings: Partial<BrushSettings> = {}) {
         frame = null;
       }
 
-      finishStroke(active);
+      finishStroke(active, dpr);
       if (active.points.length > 0) {
         history.push(active);
         committedSurface.drawStroke(active);
@@ -236,6 +252,7 @@ export default function useBrushCanvas(settings: Partial<BrushSettings> = {}) {
     return () => {
       observer.disconnect();
       if (frame !== null) window.cancelAnimationFrame(frame);
+      clearCanvasRef.current = () => {};
       live.removeEventListener('pointerdown', onDown);
       live.removeEventListener('pointermove', onPointerMove);
       if (supportsRaw) {
@@ -249,5 +266,6 @@ export default function useBrushCanvas(settings: Partial<BrushSettings> = {}) {
   return {
     committedRef,
     liveRef,
+    clearCanvas: () => clearCanvasRef.current(),
   };
 }

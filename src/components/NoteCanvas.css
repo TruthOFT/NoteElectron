@@ -47,6 +47,34 @@
   font-size: 11px;
 }
 
+.brush-hud-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.brush-clear-button {
+  padding: 3px 8px;
+  border: 1px solid #d7dce7;
+  border-radius: 7px;
+  background: #fff;
+  color: #4b5563;
+  cursor: pointer;
+  font: inherit;
+  font-size: 11px;
+}
+
+.brush-clear-button:hover {
+  border-color: #b7c0d1;
+  background: #f7f8fb;
+  color: #111827;
+}
+
+.brush-clear-button:active {
+  background: #eef1f6;
+}
+
 .note-canvas {
   position: absolute;
   inset: 0;
