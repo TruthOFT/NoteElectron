@@ -1,11 +1,14 @@
 import type { BrushPoint, BrushStroke } from './types';
 
 const TAU = Math.PI * 2;
-const MAX_DAB_SPACING = 0.35;
-const DAB_RADIUS_RATIO = 0.2;
-const TARGET_PIXEL_RATIO = 2.5;
+const MAX_DAB_SPACING = 0.2;
+const DAB_RADIUS_RATIO = 0.12;
+const TARGET_PIXEL_RATIO = 3;
+const MAX_SURFACE_SCALE = 3;
 const MAX_SURFACE_EDGE = 8192;
 const MIN_VISIBLE_DIAMETER_CSS = 1.25;
+/** dab 边缘抗锯齿模糊（CSS 像素）。抹掉弧线在像素边界的硬切。 */
+const EDGE_SMOOTH_BLUR_PX = 0.6;
 
 function appendDab(
   path: Path2D,
@@ -98,6 +101,7 @@ export function drawStroke(
   context.lineWidth = minimumRadius * 2;
   context.imageSmoothingEnabled = true;
   context.imageSmoothingQuality = 'high';
+  context.filter = `blur(${EDGE_SMOOTH_BLUR_PX}px)`;
 
   if (stroke.points.length === 1) {
     const point = stroke.points[0];
@@ -152,7 +156,7 @@ export class BrushRenderSurface {
   syncSize(dpr: number) {
     const safeDpr = Math.max(1, dpr);
     this.dpr = safeDpr;
-    const desiredScale = Math.min(2, Math.max(1, TARGET_PIXEL_RATIO / safeDpr));
+    const desiredScale = Math.min(MAX_SURFACE_SCALE, Math.max(1, TARGET_PIXEL_RATIO / safeDpr));
     const maxScale = Math.min(
       MAX_SURFACE_EDGE / this.target.width,
       MAX_SURFACE_EDGE / this.target.height,

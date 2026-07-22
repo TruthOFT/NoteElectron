@@ -41,6 +41,7 @@ function sampleEvent(
     y: (event.clientY - bounds.top) * dpr,
     pressure,
     time: event.timeStamp,
+    inputScale: dpr,
   };
 }
 

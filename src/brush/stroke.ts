@@ -11,8 +11,20 @@ const RESAMPLE_STEP = 0.7;
 const SMOOTH_PASSES = 2;
 const SMOOTH_WEIGHT = 0.22;
 
+const POSITION_ALPHA_MIN = 0.38;
+const POSITION_ALPHA_MAX = 0.86;
+const POSITION_SPEED_FOR_MAX_ALPHA = 1.2;
+
+type RawInputState = {
+  x: number;
+  y: number;
+  time: number;
+};
+
+const rawInputByStroke = new WeakMap<BrushStroke, RawInputState>();
+
 /**
- * One-Euro 风格位置滤波：
+ * 速度自适应 EMA 位置滤波：
  * - 快写 alpha 高 → 跟手、不粘
  * - 慢写/静止 alpha 略低 → 压高频手抖
  * 禁止「小步强粘前点」（那是粘手元凶）
@@ -23,14 +35,19 @@ function filterPosition(
   previous: BrushPoint | undefined,
   step: number,
   deltaTime: number,
+  inputScale: number,
 ) {
   if (!previous) return { x: sampleX, y: sampleY };
 
-  const speed = step / Math.max(1, deltaTime);
-  const cutoff = 1.0 + speed * 3.0;
-  const tau = 1 / (2 * Math.PI * cutoff);
-  const te = Math.max(1, deltaTime);
-  const alpha = clamp(1 / (1 + tau / te), 0.62, 0.96);
+  // CSS px/ms. The old RC formula mixed milliseconds with seconds and
+  // therefore kept alpha near 1, passing almost all device jitter through.
+  const speed = step / Math.max(1, inputScale) / Math.max(1, deltaTime);
+  const speedFactor = Math.pow(
+    clamp(speed / POSITION_SPEED_FOR_MAX_ALPHA, 0, 1),
+    0.65,
+  );
+  const alpha = POSITION_ALPHA_MIN
+    + (POSITION_ALPHA_MAX - POSITION_ALPHA_MIN) * speedFactor;
 
   return {
     x: previous.x + (sampleX - previous.x) * alpha,
@@ -73,27 +90,27 @@ export function appendPoint(
     y: number;
     pressure: number;
     time: number;
+    inputScale?: number;
   },
 ): boolean {
   const previous = stroke.points.at(-1);
-  const rawStep = previous
-    ? Math.hypot(sample.x - previous.x, sample.y - previous.y)
+  const previousRaw = rawInputByStroke.get(stroke);
+  const rawStep = previousRaw
+    ? Math.hypot(sample.x - previousRaw.x, sample.y - previousRaw.y)
     : 0;
-  if (previous && rawStep < MIN_STEP) return false;
+  if (previousRaw && rawStep < MIN_STEP) return false;
 
-  const deltaTime = previous ? Math.max(1, sample.time - previous.time) : 1;
+  const deltaTime = previousRaw
+    ? Math.max(1, sample.time - previousRaw.time)
+    : 1;
   const { x, y } = filterPosition(
     sample.x,
     sample.y,
     previous,
     rawStep,
     deltaTime,
+    sample.inputScale ?? 1,
   );
-
-  // 若滤波后几乎不动，也丢（避免叠点）
-  if (previous && Math.hypot(x - previous.x, y - previous.y) < MIN_STEP * 0.35) {
-    return false;
-  }
 
   // 压感 EMA：跟手但滤跳点；灵敏度高时略更跟
   const pressureAlpha = 0.45 + stroke.pressureSensitivity * 0.25;
@@ -122,6 +139,11 @@ export function appendPoint(
     y,
     r,
     pressure,
+    time: sample.time,
+  });
+  rawInputByStroke.set(stroke, {
+    x: sample.x,
+    y: sample.y,
     time: sample.time,
   });
   return true;
