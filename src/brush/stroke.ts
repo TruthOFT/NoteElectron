@@ -195,13 +195,23 @@ function smoothPass(
   });
 }
 
-/** 抬笔定稿：等距 + 轻平滑。写时不调用。 */
-export function finishStroke(stroke: BrushStroke): void {
-  if (stroke.points.length < 2) return;
+/**
+ * 构建显示轨：等距重采样 + 轻平滑。
+ * 纯函数；实时预览和抬笔定稿共用，避免渲染切换造成跳变。
+ */
+export function buildDisplayPoints(
+  points: readonly BrushPoint[],
+): BrushPoint[] {
+  if (points.length < 2) return points.map((point) => ({ ...point }));
 
-  let points = resample(stroke.points, RESAMPLE_STEP);
+  let displayPoints = resample(points, RESAMPLE_STEP);
   for (let pass = 0; pass < SMOOTH_PASSES; pass += 1) {
-    points = smoothPass(points, SMOOTH_WEIGHT);
+    displayPoints = smoothPass(displayPoints, SMOOTH_WEIGHT);
   }
-  stroke.points = points;
+  return displayPoints;
+}
+
+/** 抬笔定稿：写入与实时预览完全相同的显示轨。 */
+export function finishStroke(stroke: BrushStroke): void {
+  stroke.points = buildDisplayPoints(stroke.points);
 }

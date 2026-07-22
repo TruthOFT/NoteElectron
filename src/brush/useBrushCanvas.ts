@@ -1,6 +1,11 @@
 import { useEffect, useRef } from 'react';
-import { drawStroke, drawStrokes } from './render';
-import { appendPoint, createStroke, finishStroke } from './stroke';
+import { BrushRenderSurface } from './render';
+import {
+  appendPoint,
+  buildDisplayPoints,
+  createStroke,
+  finishStroke,
+} from './stroke';
 import type { BrushSettings, BrushStroke } from './types';
 
 const DEFAULT_SETTINGS: BrushSettings = {
@@ -55,32 +60,29 @@ export default function useBrushCanvas(settings: Partial<BrushSettings> = {}) {
     let pointerId: number | null = null;
     const history: BrushStroke[] = [];
     let frame: number | null = null;
-
-    const setupContext = (canvas: HTMLCanvasElement) => {
-      const context = canvas.getContext('2d');
-      if (!context) throw new Error('无法创建 2D 上下文');
-      context.setTransform(1, 0, 0, 1, 0, 0);
-      context.imageSmoothingEnabled = true;
-      context.imageSmoothingQuality = 'high';
-      return context;
-    };
+    const committedSurface = new BrushRenderSurface(committed);
+    const liveSurface = new BrushRenderSurface(live);
 
     const redrawCommitted = () => {
-      const context = setupContext(committed);
-      context.clearRect(0, 0, committed.width, committed.height);
-      drawStrokes(context, history);
+      committedSurface.clear();
+      committedSurface.drawStrokes(history);
+      committedSurface.present();
     };
 
     const clearLive = () => {
-      const context = setupContext(live);
-      context.clearRect(0, 0, live.width, live.height);
+      liveSurface.clear();
     };
 
     const paintLive = () => {
       frame = null;
       clearLive();
       if (!active || active.points.length === 0) return;
-      drawStroke(setupContext(live), active);
+      const displayStroke: BrushStroke = {
+        ...active,
+        points: buildDisplayPoints(active.points),
+      };
+      liveSurface.drawStroke(displayStroke);
+      liveSurface.present();
     };
 
     const scheduleLive = () => {
@@ -91,6 +93,8 @@ export default function useBrushCanvas(settings: Partial<BrushSettings> = {}) {
     const resize = () => {
       dpr = resizeCanvas(committed);
       resizeCanvas(live);
+      committedSurface.syncSize(dpr);
+      liveSurface.syncSize(dpr);
       redrawCommitted();
       paintLive();
     };
@@ -134,7 +138,8 @@ export default function useBrushCanvas(settings: Partial<BrushSettings> = {}) {
       finishStroke(active);
       if (active.points.length > 0) {
         history.push(active);
-        drawStroke(setupContext(committed), active);
+        committedSurface.drawStroke(active);
+        committedSurface.present();
       }
       active = null;
       pointerId = null;
