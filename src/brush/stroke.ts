@@ -11,9 +11,10 @@ const RESAMPLE_STEP = 0.7;
 const SMOOTH_PASSES = 2;
 const SMOOTH_WEIGHT = 0.22;
 
-const POSITION_ALPHA_MIN = 0.38;
+const POSITION_ALPHA_MIN = 0.32;
 const POSITION_ALPHA_MAX = 0.86;
 const POSITION_SPEED_FOR_MAX_ALPHA = 1.2;
+const POSITION_SPEED_EXPONENT = 0.75;
 
 type RawInputState = {
   x: number;
@@ -44,7 +45,7 @@ function filterPosition(
   const speed = step / Math.max(1, inputScale) / Math.max(1, deltaTime);
   const speedFactor = Math.pow(
     clamp(speed / POSITION_SPEED_FOR_MAX_ALPHA, 0, 1),
-    0.65,
+    POSITION_SPEED_EXPONENT,
   );
   const alpha = POSITION_ALPHA_MIN
     + (POSITION_ALPHA_MAX - POSITION_ALPHA_MIN) * speedFactor;
