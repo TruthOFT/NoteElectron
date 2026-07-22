@@ -1,18 +1,56 @@
 import { useEffect, useRef } from 'react';
-import { BrushRenderSurface } from './render';
+import {
+  BrushRenderSurface,
+  strokeBounds,
+  type BrushRect,
+} from './render';
 import {
   appendPoint,
   buildDisplayPoints,
   createStroke,
   finishStroke,
 } from './stroke';
-import type { BrushSettings, BrushStroke } from './types';
+import type { BrushPoint, BrushSettings, BrushStroke } from './types';
 
 const DEFAULT_SETTINGS: BrushSettings = {
   color: '#111827',
   size: 6,
   pressureSensitivity: 0.75,
 };
+
+const DIRTY_PADDING_CSS = 3;
+const DIRTY_OVERLAP_POINTS = 2;
+
+function unionRects(
+  first: BrushRect | null,
+  second: BrushRect | null,
+): BrushRect | null {
+  if (!first) return second;
+  if (!second) return first;
+  const x = Math.min(first.x, second.x);
+  const y = Math.min(first.y, second.y);
+  const right = Math.max(first.x + first.width, second.x + second.width);
+  const bottom = Math.max(first.y + first.height, second.y + second.height);
+  return { x, y, width: right - x, height: bottom - y };
+}
+
+function getDirtyStart(
+  previous: readonly BrushPoint[],
+  next: readonly BrushPoint[],
+) {
+  const limit = Math.min(previous.length, next.length);
+  let index = 0;
+  while (index < limit) {
+    const before = previous[index];
+    const after = next[index];
+    if (before.x !== after.x || before.y !== after.y || before.r !== after.r) {
+      break;
+    }
+    index += 1;
+  }
+  if (index === previous.length && index === next.length) return null;
+  return Math.max(0, index - DIRTY_OVERLAP_POINTS);
+}
 
 function resizeCanvas(canvas: HTMLCanvasElement) {
   const bounds = canvas.getBoundingClientRect();
@@ -61,6 +99,7 @@ export default function useBrushCanvas(settings: Partial<BrushSettings> = {}) {
     let pointerId: number | null = null;
     const history: BrushStroke[] = [];
     let frame: number | null = null;
+    let liveDisplayPoints: BrushPoint[] = [];
     const committedSurface = new BrushRenderSurface(committed);
     const liveSurface = new BrushRenderSurface(live);
 
@@ -71,19 +110,42 @@ export default function useBrushCanvas(settings: Partial<BrushSettings> = {}) {
     };
 
     const clearLive = () => {
+      liveDisplayPoints = [];
       liveSurface.clear();
     };
 
     const paintLive = () => {
       frame = null;
-      clearLive();
-      if (!active || active.points.length === 0) return;
+      if (!active || active.points.length === 0) {
+        clearLive();
+        return;
+      }
+      const nextDisplayPoints = buildDisplayPoints(active.points);
+      const dirtyStart = getDirtyStart(liveDisplayPoints, nextDisplayPoints);
+      if (dirtyStart === null) {
+        liveDisplayPoints = nextDisplayPoints;
+        return;
+      }
+      const padding = DIRTY_PADDING_CSS * dpr;
+      const previousBounds = strokeBounds(
+        liveDisplayPoints.slice(dirtyStart),
+        padding,
+      );
+      const nextBounds = strokeBounds(
+        nextDisplayPoints.slice(dirtyStart),
+        padding,
+      );
+      const dirtyRect = unionRects(previousBounds, nextBounds);
+      liveDisplayPoints = nextDisplayPoints;
+      if (!dirtyRect) return;
+
+      liveSurface.clearRect(dirtyRect);
       const displayStroke: BrushStroke = {
         ...active,
-        points: buildDisplayPoints(active.points),
+        points: liveDisplayPoints,
       };
-      liveSurface.drawStroke(displayStroke);
-      liveSurface.present();
+      liveSurface.drawStroke(displayStroke, dirtyRect);
+      liveSurface.present(dirtyRect);
     };
 
     const scheduleLive = () => {
@@ -96,6 +158,7 @@ export default function useBrushCanvas(settings: Partial<BrushSettings> = {}) {
       resizeCanvas(live);
       committedSurface.syncSize(dpr);
       liveSurface.syncSize(dpr);
+      liveDisplayPoints = [];
       redrawCommitted();
       paintLive();
     };
@@ -129,6 +192,11 @@ export default function useBrushCanvas(settings: Partial<BrushSettings> = {}) {
       onMove(event);
     };
 
+    const onPointerMove = (event: PointerEvent) => {
+      if (supportsRaw && event.pointerType !== 'mouse') return;
+      onMove(event);
+    };
+
     const onUp = (event: PointerEvent) => {
       if (pointerId !== event.pointerId || !active) return;
       if (frame !== null) {
@@ -157,11 +225,10 @@ export default function useBrushCanvas(settings: Partial<BrushSettings> = {}) {
     resize();
 
     live.addEventListener('pointerdown', onDown);
-    // 有 rawupdate 时只用它采点，避免和 pointermove 双份采样
+    live.addEventListener('pointermove', onPointerMove);
+    // 手写笔有 rawupdate 时只用它采点；鼠标保留 pointermove 回退。
     if (supportsRaw) {
       live.addEventListener('pointerrawupdate', onRaw);
-    } else {
-      live.addEventListener('pointermove', onMove);
     }
     live.addEventListener('pointerup', onUp);
     live.addEventListener('pointercancel', onUp);
@@ -170,10 +237,9 @@ export default function useBrushCanvas(settings: Partial<BrushSettings> = {}) {
       observer.disconnect();
       if (frame !== null) window.cancelAnimationFrame(frame);
       live.removeEventListener('pointerdown', onDown);
+      live.removeEventListener('pointermove', onPointerMove);
       if (supportsRaw) {
         live.removeEventListener('pointerrawupdate', onRaw);
-      } else {
-        live.removeEventListener('pointermove', onMove);
       }
       live.removeEventListener('pointerup', onUp);
       live.removeEventListener('pointercancel', onUp);
