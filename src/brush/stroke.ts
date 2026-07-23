@@ -473,6 +473,198 @@ function isClosedPath(points: readonly BrushPoint[], inputScale: number) {
     <= CLOSED_PATH_MAX_GAP_CSS * inputScale;
 }
 
+function resampleDisplaySource(
+  points: readonly BrushPoint[],
+  step: number,
+  closed: boolean,
+) {
+  const source = closed
+    ? [...points, { ...points[0], time: points[points.length - 1].time }]
+    : points;
+  const displayPoints = resample(source, step);
+  if (closed && displayPoints.length > 2) {
+    const first = displayPoints[0];
+    const last = displayPoints[displayPoints.length - 1];
+    if (Math.hypot(last.x - first.x, last.y - first.y) <= step * 1.1) {
+      displayPoints.pop();
+    }
+  }
+  return displayPoints;
+}
+
+function smoothDisplayPoints(
+  points: readonly BrushPoint[],
+  step: number,
+  inputScale: number,
+  closed: boolean,
+) {
+  let displayPoints = smoothPositionWindow(
+    points,
+    step,
+    inputScale,
+    closed,
+  );
+  displayPoints = smoothRadiusWindow(
+    displayPoints,
+    step,
+    inputScale,
+    closed,
+  );
+  return displayPoints;
+}
+
+function sameDisplaySourcePoint(first: BrushPoint, second: BrushPoint) {
+  return first.x === second.x
+    && first.y === second.y
+    && first.r === second.r
+    && first.pressure === second.pressure
+    && first.time === second.time;
+}
+
+function firstChangedPoint(
+  previous: readonly BrushPoint[],
+  next: readonly BrushPoint[],
+) {
+  const limit = Math.min(previous.length, next.length);
+  let index = 0;
+  while (
+    index < limit
+    && sameDisplaySourcePoint(previous[index], next[index])
+  ) {
+    index += 1;
+  }
+  if (index === previous.length && index === next.length) return -1;
+  return index;
+}
+
+function displayInfluenceSamples(step: number, inputScale: number) {
+  const positionRadius = Math.ceil(
+    POSITION_FIT_RADIUS_CSS * inputScale / step,
+  );
+  const cornerLookahead = Math.round(
+    CORNER_LONG_LOOKAHEAD_CSS * inputScale / step,
+  );
+  const radiusWindow = Math.ceil(
+    RADIUS_FIT_RADIUS_CSS * inputScale / step,
+  );
+  return Math.max(
+    positionRadius + cornerLookahead,
+    radiusWindow,
+  ) + 2;
+}
+
+export type BrushDisplayUpdate = {
+  points: BrushPoint[];
+  changedStart: number | null;
+};
+
+/**
+ * 写时显示轨缓存。等距采样仍按原算法生成；只有受新输入影响的尾部
+ * 重新执行原有位置与半径滤波，已经越过最大滤波窗口的前缀直接复用。
+ */
+export class BrushDisplayCache {
+  private inputScale = 0;
+
+  private closed = false;
+
+  private resampledPoints: BrushPoint[] = [];
+
+  private displayPoints: BrushPoint[] = [];
+
+  reset() {
+    this.inputScale = 0;
+    this.closed = false;
+    this.resampledPoints = [];
+    this.displayPoints = [];
+  }
+
+  update(
+    points: readonly BrushPoint[],
+    inputScale = 1,
+  ): BrushDisplayUpdate {
+    if (points.length < 2) {
+      const next = points.map((point) => ({ ...point }));
+      const changed = firstChangedPoint(this.displayPoints, next);
+      this.inputScale = Math.max(1, inputScale);
+      this.closed = false;
+      this.resampledPoints = next.map((point) => ({ ...point }));
+      this.displayPoints = next;
+      return {
+        points: next,
+        changedStart: changed < 0 ? null : changed,
+      };
+    }
+
+    const safeInputScale = Math.max(1, inputScale);
+    const step = RESAMPLE_STEP_CSS * safeInputScale;
+    const closed = isClosedPath(points, safeInputScale);
+    const resampledPoints = resampleDisplaySource(points, step, closed);
+    const scaleChanged = this.inputScale !== safeInputScale;
+    const requiresFullBuild = scaleChanged
+      || closed
+      || this.closed
+      || this.resampledPoints.length === 0;
+
+    if (requiresFullBuild) {
+      let displayPoints = smoothDisplayPoints(
+        resampledPoints,
+        step,
+        safeInputScale,
+        closed,
+      );
+      if (closed && displayPoints.length > 0) {
+        displayPoints = [
+          ...displayPoints,
+          {
+            ...displayPoints[0],
+            time: points[points.length - 1].time,
+          },
+        ];
+      }
+      this.inputScale = safeInputScale;
+      this.closed = closed;
+      this.resampledPoints = resampledPoints;
+      this.displayPoints = displayPoints;
+      return { points: displayPoints, changedStart: 0 };
+    }
+
+    const changedSource = firstChangedPoint(
+      this.resampledPoints,
+      resampledPoints,
+    );
+    if (changedSource < 0) {
+      return { points: this.displayPoints, changedStart: null };
+    }
+
+    const influence = displayInfluenceSamples(step, safeInputScale);
+    const stablePrefixEnd = Math.max(
+      0,
+      Math.min(
+        changedSource - influence,
+        this.displayPoints.length,
+      ),
+    );
+    const sourceStart = Math.max(0, stablePrefixEnd - influence);
+    const smoothedTail = smoothDisplayPoints(
+      resampledPoints.slice(sourceStart),
+      step,
+      safeInputScale,
+      false,
+    );
+    const localTailStart = stablePrefixEnd - sourceStart;
+    const displayPoints = [
+      ...this.displayPoints.slice(0, stablePrefixEnd),
+      ...smoothedTail.slice(localTailStart),
+    ];
+
+    this.inputScale = safeInputScale;
+    this.closed = false;
+    this.resampledPoints = resampledPoints;
+    this.displayPoints = displayPoints;
+    return { points: displayPoints, changedStart: stablePrefixEnd };
+  }
+}
+
 /**
  * 构建显示轨：等距重采样 + 轻平滑。
  * 纯函数；实时预览和抬笔定稿共用，避免渲染切换造成跳变。
@@ -486,25 +678,9 @@ export function buildDisplayPoints(
   const safeInputScale = Math.max(1, inputScale);
   const step = RESAMPLE_STEP_CSS * safeInputScale;
   const closed = isClosedPath(points, safeInputScale);
-  const resampleSource = closed
-    ? [...points, { ...points[0], time: points[points.length - 1].time }]
-    : points;
-  let displayPoints = resample(resampleSource, step);
-  if (closed && displayPoints.length > 2) {
-    const first = displayPoints[0];
-    const last = displayPoints[displayPoints.length - 1];
-    if (Math.hypot(last.x - first.x, last.y - first.y) <= step * 1.1) {
-      displayPoints.pop();
-    }
-  }
-  displayPoints = smoothPositionWindow(
-    displayPoints,
-    step,
-    safeInputScale,
-    closed,
-  );
-  displayPoints = smoothRadiusWindow(
-    displayPoints,
+  const resampledPoints = resampleDisplaySource(points, step, closed);
+  const displayPoints = smoothDisplayPoints(
+    resampledPoints,
     step,
     safeInputScale,
     closed,
