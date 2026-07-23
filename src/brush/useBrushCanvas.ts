@@ -8,7 +8,6 @@ import {
   appendPoint,
   BrushDisplayCache,
   createStroke,
-  finishStroke,
 } from './stroke';
 import type { BrushPoint, BrushSettings, BrushStroke } from './types';
 
@@ -211,7 +210,8 @@ export default function useBrushCanvas(settings: Partial<BrushSettings> = {}) {
         frame = null;
       }
 
-      finishStroke(active, dpr);
+      const finalDisplay = displayCache.update(active.points, dpr).points;
+      active.points = finalDisplay.map((point) => ({ ...point }));
       if (active.points.length > 0) {
         history.push(active);
         committedSurface.drawStroke(active);
