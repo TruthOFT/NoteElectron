@@ -12,10 +12,15 @@ const RESAMPLE_STEP_CSS = 0.4;
  * 二次项保留稳定曲率，高斯权重避免硬窗口把低频起伏重新带回轮廓。
  */
 const POSITION_FIT_RADIUS_CSS = 30;
-const POSITION_FIT_SIGMA_MIN_CSS = 4.5;
+const POSITION_FIT_SIGMA_MIN_CSS = 1.5;
 const POSITION_FIT_SIGMA_MAX_CSS = 10;
 const POSITION_FIT_CURVATURE_START = Math.PI * 8 / 180;
 const POSITION_FIT_CURVATURE_END = Math.PI * 35 / 180;
+const CURVATURE_NEIGHBORHOOD_CSS = 5;
+const ROBUST_FIT_CURVATURE_START = 0.12;
+const ROBUST_RESIDUAL_CSS = 0.3;
+const MAX_WINDOW_ASYMMETRY = 3;
+const LIVE_FREEZE_LOOKAHEAD_CSS = 4;
 /** 只允许小幅法线修正，防止平滑器改写用户主动书写的大形。 */
 const POSITION_MAX_NORMAL_SHIFT_CSS = 1.25;
 const CLOSED_PATH_MAX_GAP_CSS = 3;
@@ -237,6 +242,118 @@ function turnAngleAt(
   return Math.acos(cosine);
 }
 
+type LocalQuadraticFit = {
+  x0: number;
+  x1: number;
+  x2: number;
+  y0: number;
+  y1: number;
+  y2: number;
+};
+
+function solveLocalQuadratic(
+  moments: readonly number[],
+  xTerms: readonly number[],
+  yTerms: readonly number[],
+): LocalQuadraticFit | null {
+  const matrix = [
+    [moments[0], moments[1], moments[2], xTerms[0], yTerms[0]],
+    [moments[1], moments[2], moments[3], xTerms[1], yTerms[1]],
+    [moments[2], moments[3], moments[4], xTerms[2], yTerms[2]],
+  ];
+
+  for (let column = 0; column < 3; column += 1) {
+    let pivot = column;
+    for (let row = column + 1; row < 3; row += 1) {
+      if (Math.abs(matrix[row][column]) > Math.abs(matrix[pivot][column])) {
+        pivot = row;
+      }
+    }
+    if (Math.abs(matrix[pivot][column]) < 1e-8) return null;
+    if (pivot !== column) {
+      [matrix[column], matrix[pivot]] = [matrix[pivot], matrix[column]];
+    }
+
+    const divisor = matrix[column][column];
+    for (let cursor = column; cursor < 5; cursor += 1) {
+      matrix[column][cursor] /= divisor;
+    }
+    for (let row = 0; row < 3; row += 1) {
+      if (row === column) continue;
+      const factor = matrix[row][column];
+      for (let cursor = column; cursor < 5; cursor += 1) {
+        matrix[row][cursor] -= factor * matrix[column][cursor];
+      }
+    }
+  }
+
+  return {
+    x0: matrix[0][3],
+    x1: matrix[1][3],
+    x2: matrix[2][3],
+    y0: matrix[0][4],
+    y1: matrix[1][4],
+    y2: matrix[2][4],
+  };
+}
+
+function fitLocalQuadratic(
+  points: readonly BrushPoint[],
+  index: number,
+  previousWindow: number,
+  nextWindow: number,
+  step: number,
+  inputScale: number,
+  sigmaCss: number,
+  closed: boolean,
+  reference?: LocalQuadraticFit,
+) {
+  const moments = [0, 0, 0, 0, 0];
+  const xTerms = [0, 0, 0];
+  const yTerms = [0, 0, 0];
+
+  for (let offset = -previousWindow; offset <= nextWindow; offset += 1) {
+    const cursor = closed
+      ? (index + offset + points.length) % points.length
+      : index + offset;
+    const distanceCss = offset * step / inputScale;
+    const normalized = distanceCss / sigmaCss;
+    let weight = Math.exp(-0.5 * normalized * normalized);
+
+    if (reference) {
+      const fittedX = reference.x0
+        + reference.x1 * distanceCss
+        + reference.x2 * distanceCss * distanceCss;
+      const fittedY = reference.y0
+        + reference.y1 * distanceCss
+        + reference.y2 * distanceCss * distanceCss;
+      const tangentX = reference.x1 + 2 * reference.x2 * distanceCss;
+      const tangentY = reference.y1 + 2 * reference.y2 * distanceCss;
+      const tangentLength = Math.hypot(tangentX, tangentY);
+      if (tangentLength > 1e-6) {
+        const normalResidual = Math.abs(
+          (points[cursor].x - fittedX) * (-tangentY / tangentLength)
+            + (points[cursor].y - fittedY) * (tangentX / tangentLength),
+        ) / inputScale;
+        const ratio = normalResidual / ROBUST_RESIDUAL_CSS;
+        weight /= 1 + ratio * ratio * ratio * ratio;
+      }
+    }
+
+    let power = 1;
+    for (let moment = 0; moment < moments.length; moment += 1) {
+      moments[moment] += weight * power;
+      if (moment < xTerms.length) {
+        xTerms[moment] += weight * points[cursor].x * power;
+        yTerms[moment] += weight * points[cursor].y * power;
+      }
+      power *= distanceCss;
+    }
+  }
+
+  return solveLocalQuadratic(moments, xTerms, yTerms);
+}
+
 /**
  * 等距轨上的局部二次拟合。
  * 比均值/高斯窗口更能保留弧线曲率；真实折、钩作为屏障，不跨角点拟合。
@@ -258,6 +375,10 @@ function smoothPositionWindow(
   const longLookaheadSamples = Math.max(
     shortLookaheadSamples + 1,
     Math.round(CORNER_LONG_LOOKAHEAD_CSS * inputScale / step),
+  );
+  const curvatureNeighborhoodSamples = Math.max(
+    1,
+    Math.round(CURVATURE_NEIGHBORHOOD_CSS * inputScale / step),
   );
   const shortAngles = points.map((_, index) => turnAngleAt(
     points,
@@ -298,6 +419,34 @@ function smoothPositionWindow(
   const hardCorners = cornerStrengths.map((strength) => (
     strength >= HARD_CORNER_STRENGTH
   ));
+  const curvatureStrengths = longAngles.map((angle) => clamp(
+    (angle - POSITION_FIT_CURVATURE_START)
+      / (POSITION_FIT_CURVATURE_END - POSITION_FIT_CURVATURE_START),
+    0,
+    1,
+  ));
+  const localCurvatureStrengths = points.map((_, index) => {
+    let strength = curvatureStrengths[index];
+    const previousLimit = closed
+      ? curvatureNeighborhoodSamples
+      : Math.min(curvatureNeighborhoodSamples, index);
+    const nextLimit = closed
+      ? curvatureNeighborhoodSamples
+      : Math.min(curvatureNeighborhoodSamples, points.length - 1 - index);
+    for (let offset = 1; offset <= previousLimit; offset += 1) {
+      const cursor = closed
+        ? (index - offset + points.length) % points.length
+        : index - offset;
+      strength = Math.max(strength, curvatureStrengths[cursor]);
+    }
+    for (let offset = 1; offset <= nextLimit; offset += 1) {
+      const cursor = closed
+        ? (index + offset) % points.length
+        : index + offset;
+      strength = Math.max(strength, curvatureStrengths[cursor]);
+    }
+    return strength;
+  });
 
   return points.map((point, index) => {
     if (!closed && (index === 0 || index === points.length - 1)) {
@@ -305,12 +454,7 @@ function smoothPositionWindow(
     }
     if (hardCorners[index]) return { ...point };
 
-    const curvatureStrength = clamp(
-      (longAngles[index] - POSITION_FIT_CURVATURE_START)
-        / (POSITION_FIT_CURVATURE_END - POSITION_FIT_CURVATURE_START),
-      0,
-      1,
-    );
+    const curvatureStrength = localCurvatureStrengths[index];
     const sigmaCss = POSITION_FIT_SIGMA_MAX_CSS
       + (POSITION_FIT_SIGMA_MIN_CSS - POSITION_FIT_SIGMA_MAX_CSS)
         * curvatureStrength;
@@ -318,81 +462,84 @@ function smoothPositionWindow(
       radiusSamples,
       Math.max(2, Math.ceil(3 * sigmaCss * inputScale / step)),
     );
-    let halfWindow = closed
+    let previousWindow = closed
       ? Math.min(localRadiusSamples, Math.floor((points.length - 1) / 2))
-      : Math.min(
-        localRadiusSamples,
-        index,
-        points.length - 1 - index,
+      : Math.min(localRadiusSamples, index);
+    let nextWindow = closed
+      ? previousWindow
+      : Math.min(localRadiusSamples, points.length - 1 - index);
+    if (!closed && previousWindow > 0 && nextWindow > 0) {
+      previousWindow = Math.min(
+        previousWindow,
+        Math.max(2, Math.floor(nextWindow * MAX_WINDOW_ASYMMETRY)),
       );
-    for (let offset = 1; offset <= halfWindow; offset += 1) {
-      const previousIndex = closed
+      nextWindow = Math.min(
+        nextWindow,
+        Math.max(2, Math.floor(previousWindow * MAX_WINDOW_ASYMMETRY)),
+      );
+    }
+    for (let offset = 1; offset <= previousWindow; offset += 1) {
+      const cursor = closed
         ? (index - offset + points.length) % points.length
         : index - offset;
-      const nextIndex = closed
-        ? (index + offset) % points.length
-        : index + offset;
-      if (hardCorners[previousIndex] || hardCorners[nextIndex]) {
-        halfWindow = offset - 1;
+      if (hardCorners[cursor]) {
+        previousWindow = offset - 1;
         break;
       }
     }
-    if (halfWindow < 2) return { ...point };
-
-    let sum0 = 0;
-    let sum2 = 0;
-    let sum4 = 0;
-    let sumX = 0;
-    let sumY = 0;
-    let sum2X = 0;
-    let sum2Y = 0;
-    for (let offset = -halfWindow; offset <= halfWindow; offset += 1) {
+    for (let offset = 1; offset <= nextWindow; offset += 1) {
       const cursor = closed
-        ? (index + offset + points.length) % points.length
+        ? (index + offset) % points.length
         : index + offset;
-      const distanceCss = offset * step / inputScale;
-      const squared = distanceCss * distanceCss;
-      const fourth = squared * squared;
-      const normalized = distanceCss / sigmaCss;
-      const weight = Math.exp(-0.5 * normalized * normalized);
-      sum0 += weight;
-      sum2 += weight * squared;
-      sum4 += weight * fourth;
-      sumX += weight * points[cursor].x;
-      sumY += weight * points[cursor].y;
-      sum2X += weight * points[cursor].x * squared;
-      sum2Y += weight * points[cursor].y * squared;
+      if (hardCorners[cursor]) {
+        nextWindow = offset - 1;
+        break;
+      }
     }
+    if (previousWindow + nextWindow < 2) return { ...point };
 
-    const denominator = sum0 * sum4 - sum2 * sum2;
-    if (Math.abs(denominator) < 1e-6) return { ...point };
-    const cornerBlend = cornerStrengths[index];
-    const smoothedX = (sum4 * sumX - sum2 * sum2X) / denominator;
-    const smoothedY = (sum4 * sumY - sum2 * sum2Y) / denominator;
+    const initialFit = fitLocalQuadratic(
+      points,
+      index,
+      previousWindow,
+      nextWindow,
+      step,
+      inputScale,
+      sigmaCss,
+      closed,
+    );
+    if (!initialFit) return { ...point };
+    const robustFit = curvatureStrength >= ROBUST_FIT_CURVATURE_START
+      ? fitLocalQuadratic(
+        points,
+        index,
+        previousWindow,
+        nextWindow,
+        step,
+        inputScale,
+        sigmaCss,
+        closed,
+        initialFit,
+      )
+      : null;
+    const fit = robustFit ?? initialFit;
 
     // 等弧长轨迹无需沿切线前后挪点；只去除法线方向的横向起伏。
-    const tangentOffset = Math.min(halfWindow, longLookaheadSamples);
-    const previousIndex = closed
-      ? (index - tangentOffset + points.length) % points.length
-      : index - tangentOffset;
-    const nextIndex = closed
-      ? (index + tangentOffset) % points.length
-      : index + tangentOffset;
-    const tangentX = points[nextIndex].x - points[previousIndex].x;
-    const tangentY = points[nextIndex].y - points[previousIndex].y;
+    const tangentX = fit.x1;
+    const tangentY = fit.y1;
     const tangentLength = Math.hypot(tangentX, tangentY);
     if (tangentLength < 1e-6) return { ...point };
 
     const normalX = -tangentY / tangentLength;
     const normalY = tangentX / tangentLength;
-    const fittedNormalShift = (smoothedX - point.x) * normalX
-      + (smoothedY - point.y) * normalY;
+    const fittedNormalShift = (fit.x0 - point.x) * normalX
+      + (fit.y0 - point.y) * normalY;
     const maxNormalShift = POSITION_MAX_NORMAL_SHIFT_CSS * inputScale;
     const normalShift = clamp(
       fittedNormalShift,
       -maxNormalShift,
       maxNormalShift,
-    ) * (1 - cornerBlend);
+    ) * (1 - cornerStrengths[index]);
 
     return {
       ...point,
@@ -473,6 +620,238 @@ function isClosedPath(points: readonly BrushPoint[], inputScale: number) {
     <= CLOSED_PATH_MAX_GAP_CSS * inputScale;
 }
 
+function resampleDisplaySource(
+  points: readonly BrushPoint[],
+  step: number,
+  closed: boolean,
+) {
+  const source = closed
+    ? [...points, { ...points[0], time: points[points.length - 1].time }]
+    : points;
+  const displayPoints = resample(source, step);
+  if (closed && displayPoints.length > 2) {
+    const first = displayPoints[0];
+    const last = displayPoints[displayPoints.length - 1];
+    if (Math.hypot(last.x - first.x, last.y - first.y) <= step * 1.1) {
+      displayPoints.pop();
+    }
+  }
+  return displayPoints;
+}
+
+function smoothDisplayPoints(
+  points: readonly BrushPoint[],
+  step: number,
+  inputScale: number,
+  closed: boolean,
+) {
+  let displayPoints = smoothPositionWindow(
+    points,
+    step,
+    inputScale,
+    closed,
+  );
+  displayPoints = smoothRadiusWindow(
+    displayPoints,
+    step,
+    inputScale,
+    closed,
+  );
+  return displayPoints;
+}
+
+function sameDisplaySourcePoint(first: BrushPoint, second: BrushPoint) {
+  return first.x === second.x
+    && first.y === second.y
+    && first.r === second.r
+    && first.pressure === second.pressure
+    && first.time === second.time;
+}
+
+function firstChangedPoint(
+  previous: readonly BrushPoint[],
+  next: readonly BrushPoint[],
+) {
+  const limit = Math.min(previous.length, next.length);
+  let index = 0;
+  while (
+    index < limit
+    && sameDisplaySourcePoint(previous[index], next[index])
+  ) {
+    index += 1;
+  }
+  if (index === previous.length && index === next.length) return -1;
+  return index;
+}
+
+function displayInfluenceSamples(step: number, inputScale: number) {
+  const positionRadius = Math.ceil(
+    POSITION_FIT_RADIUS_CSS * inputScale / step,
+  );
+  const cornerLookahead = Math.round(
+    CORNER_LONG_LOOKAHEAD_CSS * inputScale / step,
+  );
+  const radiusWindow = Math.ceil(
+    RADIUS_FIT_RADIUS_CSS * inputScale / step,
+  );
+  return Math.max(
+    positionRadius + cornerLookahead,
+    radiusWindow,
+  ) + 2;
+}
+
+export type BrushDisplayUpdate = {
+  points: BrushPoint[];
+  changedStart: number | null;
+};
+
+/**
+ * 写时显示轨缓存。等距采样仍按原算法生成；只有受新输入影响的尾部
+ * 重新执行原有位置与半径滤波，已经越过最大滤波窗口的前缀直接复用。
+ */
+export class BrushDisplayCache {
+  private inputScale = 0;
+
+  private closed = false;
+
+  private resampledPoints: BrushPoint[] = [];
+
+  private displayPoints: BrushPoint[] = [];
+
+  private frozenPrefixLength = 0;
+
+  reset() {
+    this.inputScale = 0;
+    this.closed = false;
+    this.resampledPoints = [];
+    this.displayPoints = [];
+    this.frozenPrefixLength = 0;
+  }
+
+  private storeDisplayPoints(
+    next: BrushPoint[],
+    step: number,
+    freezePrefix: boolean,
+  ): BrushDisplayUpdate {
+    const previous = this.displayPoints;
+    const retained = freezePrefix
+      ? Math.min(
+        this.frozenPrefixLength,
+        previous.length,
+        next.length,
+      )
+      : 0;
+    const displayPoints = retained > 0
+      ? [...previous.slice(0, retained), ...next.slice(retained)]
+      : next;
+    const changed = firstChangedPoint(previous, displayPoints);
+
+    if (freezePrefix) {
+      const lookaheadSamples = Math.max(
+        1,
+        Math.ceil(LIVE_FREEZE_LOOKAHEAD_CSS * this.inputScale / step),
+      );
+      this.frozenPrefixLength = Math.max(
+        retained,
+        displayPoints.length - 1 - lookaheadSamples,
+      );
+    } else {
+      this.frozenPrefixLength = 0;
+    }
+    this.displayPoints = displayPoints;
+    return {
+      points: displayPoints,
+      changedStart: changed < 0 ? null : changed,
+    };
+  }
+
+  update(
+    points: readonly BrushPoint[],
+    inputScale = 1,
+  ): BrushDisplayUpdate {
+    if (points.length < 2) {
+      const next = points.map((point) => ({ ...point }));
+      const changed = firstChangedPoint(this.displayPoints, next);
+      this.inputScale = Math.max(1, inputScale);
+      this.closed = false;
+      this.resampledPoints = next.map((point) => ({ ...point }));
+      this.displayPoints = next;
+      this.frozenPrefixLength = 0;
+      return {
+        points: next,
+        changedStart: changed < 0 ? null : changed,
+      };
+    }
+
+    const safeInputScale = Math.max(1, inputScale);
+    const step = RESAMPLE_STEP_CSS * safeInputScale;
+    const closed = isClosedPath(points, safeInputScale);
+    const resampledPoints = resampleDisplaySource(points, step, closed);
+    const scaleChanged = this.inputScale !== safeInputScale;
+    const requiresFullBuild = scaleChanged
+      || closed
+      || this.closed
+      || this.resampledPoints.length === 0;
+
+    if (requiresFullBuild) {
+      let displayPoints = smoothDisplayPoints(
+        resampledPoints,
+        step,
+        safeInputScale,
+        closed,
+      );
+      if (closed && displayPoints.length > 0) {
+        displayPoints = [
+          ...displayPoints,
+          {
+            ...displayPoints[0],
+            time: points[points.length - 1].time,
+          },
+        ];
+      }
+      this.inputScale = safeInputScale;
+      this.closed = closed;
+      this.resampledPoints = resampledPoints;
+      this.frozenPrefixLength = 0;
+      return this.storeDisplayPoints(displayPoints, step, !closed);
+    }
+
+    const changedSource = firstChangedPoint(
+      this.resampledPoints,
+      resampledPoints,
+    );
+    if (changedSource < 0) {
+      return { points: this.displayPoints, changedStart: null };
+    }
+
+    const influence = displayInfluenceSamples(step, safeInputScale);
+    const stablePrefixEnd = Math.max(
+      0,
+      Math.min(
+        changedSource - influence,
+        this.displayPoints.length,
+      ),
+    );
+    const sourceStart = Math.max(0, stablePrefixEnd - influence);
+    const smoothedTail = smoothDisplayPoints(
+      resampledPoints.slice(sourceStart),
+      step,
+      safeInputScale,
+      false,
+    );
+    const localTailStart = stablePrefixEnd - sourceStart;
+    const displayPoints = [
+      ...this.displayPoints.slice(0, stablePrefixEnd),
+      ...smoothedTail.slice(localTailStart),
+    ];
+
+    this.inputScale = safeInputScale;
+    this.closed = false;
+    this.resampledPoints = resampledPoints;
+    return this.storeDisplayPoints(displayPoints, step, true);
+  }
+}
+
 /**
  * 构建显示轨：等距重采样 + 轻平滑。
  * 纯函数；实时预览和抬笔定稿共用，避免渲染切换造成跳变。
@@ -486,25 +865,9 @@ export function buildDisplayPoints(
   const safeInputScale = Math.max(1, inputScale);
   const step = RESAMPLE_STEP_CSS * safeInputScale;
   const closed = isClosedPath(points, safeInputScale);
-  const resampleSource = closed
-    ? [...points, { ...points[0], time: points[points.length - 1].time }]
-    : points;
-  let displayPoints = resample(resampleSource, step);
-  if (closed && displayPoints.length > 2) {
-    const first = displayPoints[0];
-    const last = displayPoints[displayPoints.length - 1];
-    if (Math.hypot(last.x - first.x, last.y - first.y) <= step * 1.1) {
-      displayPoints.pop();
-    }
-  }
-  displayPoints = smoothPositionWindow(
-    displayPoints,
-    step,
-    safeInputScale,
-    closed,
-  );
-  displayPoints = smoothRadiusWindow(
-    displayPoints,
+  const resampledPoints = resampleDisplaySource(points, step, closed);
+  const displayPoints = smoothDisplayPoints(
+    resampledPoints,
     step,
     safeInputScale,
     closed,

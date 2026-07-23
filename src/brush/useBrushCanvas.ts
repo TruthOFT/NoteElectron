@@ -6,9 +6,8 @@ import {
 } from './render';
 import {
   appendPoint,
-  buildDisplayPoints,
+  BrushDisplayCache,
   createStroke,
-  finishStroke,
 } from './stroke';
 import type { BrushPoint, BrushSettings, BrushStroke } from './types';
 
@@ -32,24 +31,6 @@ function unionRects(
   const right = Math.max(first.x + first.width, second.x + second.width);
   const bottom = Math.max(first.y + first.height, second.y + second.height);
   return { x, y, width: right - x, height: bottom - y };
-}
-
-function getDirtyStart(
-  previous: readonly BrushPoint[],
-  next: readonly BrushPoint[],
-) {
-  const limit = Math.min(previous.length, next.length);
-  let index = 0;
-  while (index < limit) {
-    const before = previous[index];
-    const after = next[index];
-    if (before.x !== after.x || before.y !== after.y || before.r !== after.r) {
-      break;
-    }
-    index += 1;
-  }
-  if (index === previous.length && index === next.length) return null;
-  return Math.max(0, index - DIRTY_OVERLAP_POINTS);
 }
 
 function resizeCanvas(canvas: HTMLCanvasElement) {
@@ -101,6 +82,7 @@ export default function useBrushCanvas(settings: Partial<BrushSettings> = {}) {
     const history: BrushStroke[] = [];
     let frame: number | null = null;
     let liveDisplayPoints: BrushPoint[] = [];
+    const displayCache = new BrushDisplayCache();
     const committedSurface = new BrushRenderSurface(committed);
     const liveSurface = new BrushRenderSurface(live);
 
@@ -112,6 +94,7 @@ export default function useBrushCanvas(settings: Partial<BrushSettings> = {}) {
 
     const clearLive = () => {
       liveDisplayPoints = [];
+      displayCache.reset();
       liveSurface.clear();
     };
 
@@ -136,12 +119,16 @@ export default function useBrushCanvas(settings: Partial<BrushSettings> = {}) {
         clearLive();
         return;
       }
-      const nextDisplayPoints = buildDisplayPoints(active.points, dpr);
-      const dirtyStart = getDirtyStart(liveDisplayPoints, nextDisplayPoints);
-      if (dirtyStart === null) {
+      const displayUpdate = displayCache.update(active.points, dpr);
+      const nextDisplayPoints = displayUpdate.points;
+      if (displayUpdate.changedStart === null) {
         liveDisplayPoints = nextDisplayPoints;
         return;
       }
+      const dirtyStart = Math.max(
+        0,
+        displayUpdate.changedStart - DIRTY_OVERLAP_POINTS,
+      );
       const padding = DIRTY_PADDING_CSS * dpr;
       const previousBounds = strokeBounds(
         liveDisplayPoints.slice(dirtyStart),
@@ -175,6 +162,7 @@ export default function useBrushCanvas(settings: Partial<BrushSettings> = {}) {
       committedSurface.syncSize(dpr);
       liveSurface.syncSize(dpr);
       liveDisplayPoints = [];
+      displayCache.reset();
       redrawCommitted();
       paintLive();
     };
@@ -185,6 +173,8 @@ export default function useBrushCanvas(settings: Partial<BrushSettings> = {}) {
       live.setPointerCapture(event.pointerId);
       pointerId = event.pointerId;
       active = createStroke(settingsRef.current);
+      liveDisplayPoints = [];
+      displayCache.reset();
       appendPoint(active, sampleEvent(event, live, dpr));
       scheduleLive();
     };
@@ -220,7 +210,8 @@ export default function useBrushCanvas(settings: Partial<BrushSettings> = {}) {
         frame = null;
       }
 
-      finishStroke(active, dpr);
+      const finalDisplay = displayCache.update(active.points, dpr).points;
+      active.points = finalDisplay.map((point) => ({ ...point }));
       if (active.points.length > 0) {
         history.push(active);
         committedSurface.drawStroke(active);
